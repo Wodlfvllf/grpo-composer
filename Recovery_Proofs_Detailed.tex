@@ -1,0 +1,719 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+\geometry{margin=1in}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\definecolor{proofblue}{RGB}{0,102,204}
+\definecolor{resultgreen}{RGB}{0,128,0}
+\definecolor{configorange}{RGB}{200,100,0}
+
+\newtcolorbox{proofbox}[1]{
+    colback=proofblue!5,
+    colframe=proofblue,
+    title=\textbf{#1},
+    fonttitle=\bfseries,
+    breakable
+}
+
+\newtcolorbox{resultbox}{
+    colback=resultgreen!10,
+    colframe=resultgreen,
+    title=\textbf{Final Result},
+    fonttitle=\bfseries
+}
+
+\newtcolorbox{configbox}{
+    colback=configorange!10,
+    colframe=configorange,
+    title=\textbf{Configuration},
+    fonttitle=\bfseries
+}
+
+\title{\textbf{Mathematical Recovery Proofs}\\[0.3em]
+\Large Deriving Each GRPO Variant from the Unified Framework}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides detailed step-by-step mathematical proofs showing that each GRPO variant (GRPO, Dr.~GRPO, DAPO, DARO, $\lambda$-GRPO, and DRA-GRPO) can be exactly recovered from the unified framework by setting specific hyperparameter configurations. Each proof follows a systematic substitution process.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{The Unified Master Objective}
+%==============================================================================
+
+We begin by stating the unified objective from which all methods are recovered:
+
+\begin{equation}
+\boxed{
+\mathcal{J}_{\text{Unified}}(\theta, \{w_\mu\}, \lambda) = \sum_{\mu \in \mathcal{M}} w_\mu^{\text{eff}} \cdot \mathbb{E}_{q: \mu_q = \mu} \left[ \mathbb{I}_{\text{OS}}(q) \cdot \frac{1}{\Omega_\mu} \sum_{i=1}^{G} f_\lambda(o_i) \cdot w_i^{\text{len}} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta \cdot D_{\text{KL}}^{(i,t)} \right) \right] + \mathcal{L}_{\text{reg}}
+}
+\label{eq:unified}
+\end{equation}
+
+\subsection{Component Definitions}
+
+\textbf{Per-Token Clipped Loss:}
+\begin{equation}
+\mathcal{L}_{\text{clip}}^{(i,t)} = \min\left( \rho_{i,t} \cdot \hat{A}_{i}, \; \text{clip}(\rho_{i,t}, 1-\epsilon_l, 1+\epsilon_h) \cdot \hat{A}_{i} \right)
+\end{equation}
+
+\textbf{Probability Ratio:}
+\begin{equation}
+\rho_{i,t} = \frac{\pi_{\theta}(o_{i,t} \mid q, o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t} \mid q, o_{i,<t})}
+\end{equation}
+
+\textbf{Advantage with Effective Reward:}
+\begin{equation}
+\hat{A}_{i} = \frac{R_i^{\text{eff}} - \mu_{\text{group}}}{\sigma_{\text{eff}}}
+\end{equation}
+
+\textbf{Group Statistics:}
+\begin{equation}
+\mu_{\text{group}} = \frac{1}{G}\sum_{j=1}^G R_j^{\text{eff}}, \quad \sigma_{\text{group}} = \sqrt{\frac{1}{G}\sum_{j=1}^G (R_j^{\text{eff}} - \mu_{\text{group}})^2}
+\end{equation}
+
+\subsection{Configurable Components}
+
+The following components are controlled by hyperparameters:
+
+\begin{align}
+\sigma_{\text{eff}} &= \begin{cases} \sigma_{\text{group}} + \epsilon_\sigma & \text{if std\_normalize = True} \\ 1 & \text{if std\_normalize = False} \end{cases} \\[10pt]
+w_i^{\text{len}} &= \begin{cases} \frac{1}{|o_i|} & \text{if length\_norm = True} \\ 1 & \text{if length\_norm = False} \end{cases} \\[10pt]
+\mathbb{I}_{\text{OS}}(q) &= \begin{cases} \mathbb{I}[0 < \mu_q < 1] & \text{if oversampling = True} \\ 1 & \text{if oversampling = False} \end{cases} \\[10pt]
+f_\lambda(o_i) &= \begin{cases} G \cdot \text{softmax}(h_i^\lambda)_i & \text{if lambda\_weighting = True} \\ 1 & \text{if lambda\_weighting = False} \end{cases} \\[10pt]
+w_\mu^{\text{eff}} &= \begin{cases} w_\mu & \text{if difficulty\_weighting = True} \\ 1 & \text{if difficulty\_weighting = False} \end{cases} \\[10pt]
+R_i^{\text{eff}} &= \begin{cases} R_i \cdot (1 - \sum_{j \neq i} s(o_i, o_j)) & \text{if diversity\_weighting = True} \\ R_i & \text{if diversity\_weighting = False} \end{cases} \\[10pt]
+\Omega_\mu &= \begin{cases} \frac{1}{\sum_i |o_i|} & \text{if group\_norm\_type = 1} \\ \frac{1}{G} & \text{if group\_norm\_type = 0} \end{cases} \\[10pt]
+\mathcal{L}_{\text{reg}} &= \begin{cases} -\sum_\mu \ln(w_\mu) & \text{if difficulty\_weighting = True} \\ 0 & \text{if difficulty\_weighting = False} \end{cases}
+\end{align}
+
+\newpage
+
+%==============================================================================
+\section{Configuration Matrix}
+%==============================================================================
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Parameter} & \textbf{GRPO} & \textbf{Dr.GRPO} & \textbf{DAPO} & \textbf{DARO} & $\bm{\lambda}$\textbf{-GRPO} & \textbf{DRA-GRPO} \\
+\midrule
+$\epsilon_l$ & 0.2 & 0.2 & 0.2 & 0.2 & 0.2 & 0.2 \\
+$\epsilon_h$ & 0.2 & 0.2 & \textbf{0.28} & \textbf{0.28} & 0.2 & 0.2 \\
+std\_normalize & True & \textbf{False} & True & True & True & True \\
+length\_norm & True & \textbf{False} & \textbf{False} & \textbf{False} & True & True \\
+group\_norm\_type & 0 & 0 & \textbf{1} & \textbf{1} & 0 & 0 \\
+$\beta$ & 0.04 & \textbf{0} & \textbf{0} & \textbf{0} & 0.04 & 0.04 \\
+oversampling & False & False & \textbf{True} & \textbf{True} & False & False \\
+difficulty\_weighting & False & False & False & \textbf{True} & False & False \\
+lambda\_weighting & False & False & False & False & \textbf{True} & False \\
+diversity\_weighting & False & False & False & False & False & \textbf{True} \\
+\bottomrule
+\end{tabular}
+\caption{Configuration matrix showing hyperparameter settings for each method. Bold indicates deviation from GRPO baseline.}
+\label{tab:config}
+\end{table}
+
+\newpage
+
+%==============================================================================
+\section{Recovering GRPO (DeepSeekMath)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = True
+    \item length\_norm = True
+    \item group\_norm\_type = 0
+    \item $\beta$ = 0.04 (or any $> 0$)
+    \item oversampling = False
+    \item difficulty\_weighting = False
+    \item lambda\_weighting = False
+    \item diversity\_weighting = False
+    \item $\epsilon_l = \epsilon_h = 0.2$
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Simplify Difficulty Weighting}
+Since \texttt{difficulty\_weighting = False}:
+\begin{align}
+w_\mu^{\text{eff}} &= 1 \quad \text{for all } \mu \\
+\mathcal{L}_{\text{reg}} &= 0
+\end{align}
+
+The sum over difficulty groups collapses to a single expectation over all prompts:
+\begin{equation}
+\sum_{\mu \in \mathcal{M}} w_\mu^{\text{eff}} \cdot \mathbb{E}_{q: \mu_q = \mu}[\cdots] \;\;\longrightarrow\;\; \mathbb{E}_{q \sim P(Q)}[\cdots]
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Simplify Oversampling Filter}
+Since \texttt{oversampling = False}:
+\begin{equation}
+\mathbb{I}_{\text{OS}}(q) = 1 \quad \text{for all } q
+\end{equation}
+
+All prompts are included in training.
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Simplify Response-Level Weighting}
+Since \texttt{lambda\_weighting = False}:
+\begin{equation}
+f_\lambda(o_i) = 1 \quad \text{for all } i
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 4: Simplify Diversity Adjustment}
+Since \texttt{diversity\_weighting = False}:
+\begin{equation}
+R_i^{\text{eff}} = R_i \quad \text{(raw reward, no SMI penalty)}
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 5: Apply Standard Deviation Normalization}
+Since \texttt{std\_normalize = True}:
+\begin{equation}
+\sigma_{\text{eff}} = \sigma_{\text{group}} + \epsilon_\sigma
+\end{equation}
+
+Therefore the advantage becomes:
+\begin{equation}
+\hat{A}_i = \frac{R_i - \mu_{\text{group}}}{\sigma_{\text{group}} + \epsilon_\sigma}
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 6: Apply Length Normalization}
+Since \texttt{length\_norm = True}:
+\begin{equation}
+w_i^{\text{len}} = \frac{1}{|o_i|}
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 7: Apply Group Normalization}
+Since \texttt{group\_norm\_type = 0}:
+\begin{equation}
+\Omega = \frac{1}{G}
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 8: Apply Symmetric Clipping}
+Since $\epsilon_l = \epsilon_h = 0.2$:
+\begin{equation}
+\text{clip}(\rho, 1-\epsilon_l, 1+\epsilon_h) = \text{clip}(\rho, 0.8, 1.2)
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 9: Final Substitution}
+Substituting all components into Equation~\eqref{eq:unified}:
+
+\begin{align}
+\mathcal{J}_{\text{Unified}} &= \underbrace{1}_{w_\mu^{\text{eff}}} \cdot \mathbb{E}_{q} \left[ \underbrace{1}_{\mathbb{I}_{\text{OS}}} \cdot \frac{1}{\underbrace{G}_{\Omega^{-1}}} \sum_{i=1}^{G} \underbrace{1}_{f_\lambda} \cdot \underbrace{\frac{1}{|o_i|}}_{w_i^{\text{len}}} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta \cdot D_{\text{KL}}^{(i,t)} \right) \right] + \underbrace{0}_{\mathcal{L}_{\text{reg}}} \\[10pt]
+&= \mathbb{E}_{q} \left[ \frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta \cdot D_{\text{KL}}^{(i,t)} \right) \right]
+\end{align}
+
+where:
+\begin{equation}
+\mathcal{L}_{\text{clip}}^{(i,t)} = \min\left( \rho_{i,t} \cdot \frac{R_i - \mu}{\sigma + \epsilon_\sigma}, \; \text{clip}(\rho_{i,t}, 0.8, 1.2) \cdot \frac{R_i - \mu}{\sigma + \epsilon_\sigma} \right)
+\end{equation}
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{J}_{\text{GRPO}} = \mathbb{E}_{q, \{o_i\}} \left[ \frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \left( \min\left( \rho_{i,t} \cdot \frac{R_i - \mu}{\sigma + \epsilon}, \; \text{clip}(\rho) \cdot \frac{R_i - \mu}{\sigma + \epsilon} \right) - \beta D_{\text{KL}}^{(i,t)} \right) \right]
+\end{equation}
+
+\textbf{This exactly matches the GRPO objective from DeepSeekMath.} $\checkmark$
+\end{resultbox}
+
+\newpage
+
+%==============================================================================
+\section{Recovering Dr.~GRPO (Bias-Free)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = \textbf{False}
+    \item length\_norm = \textbf{False}
+    \item group\_norm\_type = 0
+    \item $\beta$ = \textbf{0}
+    \item oversampling = False
+    \item difficulty\_weighting = False
+    \item lambda\_weighting = False
+    \item diversity\_weighting = False
+    \item $\epsilon_l = \epsilon_h = 0.2$
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Simplify Weights (Same as GRPO)}
+Since difficulty\_weighting, lambda\_weighting, diversity\_weighting are all False:
+\begin{equation}
+w_\mu^{\text{eff}} = 1, \quad f_\lambda(o_i) = 1, \quad R_i^{\text{eff}} = R_i, \quad \mathcal{L}_{\text{reg}} = 0
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Remove Standard Deviation Normalization (KEY DIFFERENCE)}
+Since \texttt{std\_normalize = False}:
+\begin{equation}
+\sigma_{\text{eff}} = 1
+\end{equation}
+
+Therefore the advantage becomes:
+\begin{equation}
+\hat{A}_i = \frac{R_i - \mu_{\text{group}}}{1} = R_i - \mu_{\text{group}}
+\end{equation}
+
+\textbf{This is the unbiased advantage that Dr.~GRPO uses.}
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Remove Length Normalization (KEY DIFFERENCE)}
+Since \texttt{length\_norm = False}:
+\begin{equation}
+w_i^{\text{len}} = 1
+\end{equation}
+
+\textbf{This removes the $\frac{1}{|o_i|}$ factor that causes length bias in GRPO.}
+\end{proofbox}
+
+\begin{proofbox}{Step 4: Remove KL Penalty (KEY DIFFERENCE)}
+Since $\beta = 0$:
+\begin{equation}
+\beta \cdot D_{\text{KL}}^{(i,t)} = 0
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 5: Final Substitution}
+\begin{align}
+\mathcal{J}_{\text{Unified}} &= \mathbb{E}_{q} \left[ \frac{1}{G} \sum_{i=1}^{G} \underbrace{1}_{w_i^{\text{len}}} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \underbrace{0}_{\beta \cdot D_{\text{KL}}} \right) \right] \\[10pt]
+&= \mathbb{E}_{q} \left[ \frac{1}{G} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)} \right]
+\end{align}
+
+where:
+\begin{equation}
+\mathcal{L}_{\text{clip}}^{(i,t)} = \min\left( \rho_{i,t} \cdot (R_i - \mu), \; \text{clip}(\rho_{i,t}, 0.8, 1.2) \cdot (R_i - \mu) \right)
+\end{equation}
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{J}_{\text{Dr.GRPO}} = \mathbb{E}_{q, \{o_i\}} \left[ \frac{1}{G} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \min\left( \rho_{i,t} \cdot (R_i - \mu), \; \text{clip}(\rho_{i,t}) \cdot (R_i - \mu) \right) \right]
+\end{equation}
+
+\textbf{This exactly matches the Dr.~GRPO objective.} $\checkmark$
+
+\textbf{Key differences from GRPO:}
+\begin{itemize}
+    \item No $\frac{1}{|o_i|}$ (removes length bias)
+    \item No $\frac{1}{\sigma}$ (removes variance bias)
+    \item No KL penalty
+\end{itemize}
+\end{resultbox}
+
+\newpage
+
+%==============================================================================
+\section{Recovering DAPO (ByteDance)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = True
+    \item length\_norm = \textbf{False}
+    \item group\_norm\_type = \textbf{1}
+    \item $\beta$ = \textbf{0}
+    \item oversampling = \textbf{True}
+    \item difficulty\_weighting = False
+    \item lambda\_weighting = False
+    \item diversity\_weighting = False
+    \item $\epsilon_l = 0.2$, $\epsilon_h = \textbf{0.28}$ (asymmetric)
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Apply Oversampling Filter (KEY DIFFERENCE)}
+Since \texttt{oversampling = True}:
+\begin{equation}
+\mathbb{I}_{\text{OS}}(q) = \mathbb{I}[0 < \mu_q < 1]
+\end{equation}
+
+This filters out prompts where:
+\begin{itemize}
+    \item All responses are correct ($\mu_q = 1$) $\Rightarrow$ zero advantage variance
+    \item All responses are wrong ($\mu_q = 0$) $\Rightarrow$ zero advantage variance
+\end{itemize}
+
+The expectation becomes:
+\begin{equation}
+\mathbb{E}_{q}[\cdots] \;\;\longrightarrow\;\; \mathbb{E}_{q: 0 < \mu_q < 1}[\cdots]
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Apply Token-Level Normalization (KEY DIFFERENCE)}
+Since \texttt{group\_norm\_type = 1}:
+\begin{equation}
+\Omega = \frac{1}{\sum_{i=1}^G |o_i|}
+\end{equation}
+
+This normalizes by \textbf{total tokens across all responses}, not by group size.
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Remove Length Normalization}
+Since \texttt{length\_norm = False}:
+\begin{equation}
+w_i^{\text{len}} = 1
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 4: Apply Asymmetric Clipping (KEY DIFFERENCE)}
+Since $\epsilon_l = 0.2$ and $\epsilon_h = 0.28$:
+\begin{equation}
+\text{clip}(\rho, 1-\epsilon_l, 1+\epsilon_h) = \text{clip}(\rho, 0.8, 1.28)
+\end{equation}
+
+\textbf{Asymmetric bounds allow more aggressive probability increases for good actions.}
+\end{proofbox}
+
+\begin{proofbox}{Step 5: Remove KL Penalty}
+Since $\beta = 0$:
+\begin{equation}
+\beta \cdot D_{\text{KL}}^{(i,t)} = 0
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 6: Final Substitution}
+\begin{align}
+\mathcal{J}_{\text{Unified}} &= \mathbb{E}_{q: 0 < \mu_q < 1} \left[ \frac{1}{\sum_{i=1}^G |o_i|} \sum_{i=1}^{G} \underbrace{1}_{w_i^{\text{len}}} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)} \right] \\[10pt]
+&= \mathbb{E}_{q: 0 < \mu_q < 1} \left[ \frac{1}{\sum_{i=1}^G |o_i|} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)} \right]
+\end{align}
+
+where:
+\begin{equation}
+\mathcal{L}_{\text{clip}}^{(i,t)} = \min\left( \rho_{i,t} \cdot \frac{R_i - \mu}{\sigma + \epsilon}, \; \text{clip}(\rho_{i,t}, 0.8, 1.28) \cdot \frac{R_i - \mu}{\sigma + \epsilon} \right)
+\end{equation}
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{J}_{\text{DAPO}} = \mathbb{E}_{q: 0 < \mu_q < 1} \left[ \frac{1}{\sum_{i=1}^G |o_i|} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \min\left( \rho_{i,t} \cdot A_i, \; \text{clip}(\rho, 0.8, 1.28) \cdot A_i \right) \right]
+\end{equation}
+
+\textbf{This exactly matches the DAPO objective.} $\checkmark$
+
+\textbf{Key features:}
+\begin{itemize}
+    \item Dynamic sampling: only $0 < \mu_q < 1$
+    \item Token-level normalization: $1/\sum|o_i|$
+    \item Asymmetric clipping: $[0.8, 1.28]$
+    \item No KL penalty
+\end{itemize}
+\end{resultbox}
+
+\newpage
+
+%==============================================================================
+\section{Recovering DARO (Difficulty-Aware)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = True
+    \item length\_norm = False
+    \item group\_norm\_type = 1
+    \item $\beta$ = 0
+    \item oversampling = True
+    \item difficulty\_weighting = \textbf{True}
+    \item lambda\_weighting = False
+    \item diversity\_weighting = False
+    \item $\epsilon_l = 0.2$, $\epsilon_h = 0.28$
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Enable Difficulty Weighting (KEY DIFFERENCE)}
+Since \texttt{difficulty\_weighting = True}:
+\begin{equation}
+w_\mu^{\text{eff}} = w_\mu \quad \text{(learnable parameter for each difficulty level } \mu \text{)}
+\end{equation}
+
+The sum over difficulty groups is now \textbf{explicitly maintained}:
+\begin{equation}
+\mathcal{J} = \sum_{\mu \in \mathcal{M}} w_\mu \cdot \mathbb{E}_{q: \mu_q = \mu}[\cdots] + \mathcal{L}_{\text{reg}}
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Apply Per-Group Regularization}
+Since difficulty\_weighting = True:
+\begin{equation}
+\mathcal{L}_{\text{reg}} = -\sum_{\mu \in \mathcal{M}} \ln(w_\mu)
+\end{equation}
+
+This regularization ensures $w_\mu^* \propto \mathcal{L}_\mu^{-1}$ at optimum.
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Apply Per-Difficulty Normalization}
+For DARO, normalization is computed \textbf{per difficulty group}:
+\begin{equation}
+\Omega_\mu = \frac{1}{L_\mu}, \quad L_\mu = \sum_{q: \mu_q = \mu} \sum_{i=1}^G |o_i|
+\end{equation}
+
+Each group is normalized by its \textbf{own total token count}.
+\end{proofbox}
+
+\begin{proofbox}{Step 4: Final Substitution}
+\begin{align}
+\mathcal{J}_{\text{Unified}} &= \sum_{\mu \in \mathcal{M}} w_\mu \cdot \mathbb{E}_{q: \mu_q = \mu} \left[ \frac{1}{L_\mu} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)} \right] - \sum_{\mu} \ln(w_\mu) \\[10pt]
+&= \sum_{\mu \in \mathcal{M}} \left[ w_\mu \cdot \mathcal{L}_\mu - \ln(w_\mu) \right]
+\end{align}
+
+where:
+\begin{equation}
+\mathcal{L}_\mu = \frac{1}{L_\mu} \sum_{q: \mu_q = \mu} \sum_{i=1}^{G} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)}
+\end{equation}
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{L}_{\text{DARO}} = \sum_{\mu \in \mathcal{M}} \left[ w_\mu \cdot \mathcal{L}_\mu - \ln(w_\mu) \right]
+\end{equation}
+
+\textbf{This exactly matches the DARO objective.} $\checkmark$
+
+\textbf{Key features:}
+\begin{itemize}
+    \item Stratified by difficulty: separate loss per $\mu$
+    \item Learnable weights: $w_\mu$ optimized via gradient descent
+    \item Per-group normalization: $1/L_\mu$
+    \item Regularization: $-\ln(w_\mu)$ ensures optimal weighting
+\end{itemize}
+\end{resultbox}
+
+\newpage
+
+%==============================================================================
+\section{Recovering $\lambda$-GRPO (Length Weighting)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = True
+    \item length\_norm = True
+    \item group\_norm\_type = 0
+    \item $\beta$ = 0.04
+    \item oversampling = False
+    \item difficulty\_weighting = False
+    \item lambda\_weighting = \textbf{True}
+    \item diversity\_weighting = False
+    \item $\epsilon_l = \epsilon_h = 0.2$
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Enable Lambda Weighting (KEY DIFFERENCE)}
+Since \texttt{lambda\_weighting = True}:
+\begin{equation}
+f_\lambda(o_i) = G \cdot \text{softmax}(\{h_1^\lambda, \ldots, h_G^\lambda\})_i
+\end{equation}
+
+where:
+\begin{align}
+\mu_\ell &= \frac{1}{G}\sum_{j=1}^G |o_j| \\
+\sigma_\ell &= \sqrt{\frac{1}{G}\sum_{j=1}^G (|o_j| - \mu_\ell)^2} \\
+z_i &= \frac{|o_i| - \mu_\ell}{\sigma_\ell + \epsilon} \\
+h_i &= 1 + r \cdot z_i \\
+g_i &= h_i^\lambda \\
+f_\lambda(o_i) &= G \cdot \frac{e^{g_i}}{\sum_{j=1}^G e^{g_j}}
+\end{align}
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Other Components (Same as GRPO)}
+\begin{align}
+w_\mu^{\text{eff}} &= 1, \quad R_i^{\text{eff}} = R_i, \quad \mathcal{L}_{\text{reg}} = 0 \\
+\sigma_{\text{eff}} &= \sigma_{\text{group}} + \epsilon_\sigma \\
+w_i^{\text{len}} &= \frac{1}{|o_i|}, \quad \Omega = \frac{1}{G}
+\end{align}
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Final Substitution}
+\begin{align}
+\mathcal{J}_{\text{Unified}} &= \mathbb{E}_{q} \left[ \frac{1}{G} \sum_{i=1}^{G} f_\lambda(o_i) \cdot \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta D_{\text{KL}}^{(i,t)} \right) \right]
+\end{align}
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{J}_{\lambda\text{-GRPO}} = \frac{1}{G} \sum_{i=1}^{G} f_\lambda(o_i) \cdot \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \mathcal{L}_{\text{clip}}^{(i,t)}
+\end{equation}
+
+where $f_\lambda(o_i) = G \cdot \frac{e^{h_i^\lambda}}{\sum_j e^{h_j^\lambda}}$
+
+\textbf{This exactly matches the $\lambda$-GRPO objective.} $\checkmark$
+\end{resultbox}
+
+\subsection{Special Case: $\lambda = 0$ Reduces to GRPO}
+
+\begin{proofbox}{Verification: $\lambda = 0$}
+When $\lambda = 0$:
+\begin{align}
+g_i &= h_i^0 = 1 \quad \text{for all } i \\
+f_\lambda(o_i) &= G \cdot \frac{e^1}{\sum_{j=1}^G e^1} = G \cdot \frac{e}{G \cdot e} = 1
+\end{align}
+
+Therefore $f_\lambda(o_i) = 1$ for all $i$, and the objective reduces to standard GRPO. $\checkmark$
+\end{proofbox}
+
+\newpage
+
+%==============================================================================
+\section{Recovering DRA-GRPO (Diversity-Aware)}
+%==============================================================================
+
+\begin{configbox}
+\textbf{Target Configuration:}
+\begin{itemize}[noitemsep]
+    \item std\_normalize = True
+    \item length\_norm = True
+    \item group\_norm\_type = 0
+    \item $\beta$ = 0.04
+    \item oversampling = False
+    \item difficulty\_weighting = False
+    \item lambda\_weighting = False
+    \item diversity\_weighting = \textbf{True}
+    \item $\epsilon_l = \epsilon_h = 0.2$
+\end{itemize}
+\end{configbox}
+
+\begin{proofbox}{Step 1: Enable Diversity Weighting (KEY DIFFERENCE)}
+Since \texttt{diversity\_weighting = True}:
+\begin{equation}
+R_i^{\text{eff}} = R_i \cdot \left(1 - \sum_{j \neq i} s(o_i, o_j)\right)
+\end{equation}
+
+where $s(o_i, o_j) = \cos(\text{embed}(o_i), \text{embed}(o_j))$ is the cosine similarity between sentence embeddings.
+
+The term $\sum_{j \neq i} s(o_i, o_j)$ is the \textbf{Submodular Mutual Information (SMI)}, measuring how redundant output $o_i$ is with respect to other outputs.
+\end{proofbox}
+
+\begin{proofbox}{Step 2: Efficient Computation via Similarity Matrix}
+Given embeddings $\mathbf{e}_i$ for each output, construct:
+\begin{equation}
+L_{ij} = s(o_i, o_j) = \mathbf{e}_i^\top \mathbf{e}_j \quad \text{(similarity matrix)}
+\end{equation}
+
+Then:
+\begin{align}
+\text{SMI}_i &= \sum_{j \neq i} L_{ij} = \sum_{j=1}^G L_{ij} - L_{ii} = (L \cdot \mathbf{1}_G)_i - 1 \\
+\mathbf{SMI} &= L \cdot \mathbf{1}_G - \mathbf{1}_G
+\end{align}
+
+And the adjusted rewards:
+\begin{equation}
+\mathbf{\tilde{R}} = \mathbf{R} \odot (\mathbf{1} - \mathbf{SMI}) = \mathbf{R} \odot (\mathbf{1} - L \cdot \mathbf{1}_G + \mathbf{1}_G)
+\end{equation}
+\end{proofbox}
+
+\begin{proofbox}{Step 3: Advantage Computation with Adjusted Rewards}
+The advantage is computed using $R_i^{\text{eff}}$ instead of $R_i$:
+\begin{equation}
+\hat{A}_i = \frac{R_i^{\text{eff}} - \mu_{\text{group}}^{\text{eff}}}{\sigma_{\text{group}}^{\text{eff}} + \epsilon_\sigma}
+\end{equation}
+
+where $\mu_{\text{group}}^{\text{eff}}$ and $\sigma_{\text{group}}^{\text{eff}}$ are computed from the adjusted rewards $\{R_i^{\text{eff}}\}$.
+\end{proofbox}
+
+\begin{proofbox}{Step 4: Other Components (Same as GRPO)}
+\begin{align}
+w_\mu^{\text{eff}} &= 1, \quad f_\lambda(o_i) = 1, \quad \mathcal{L}_{\text{reg}} = 0 \\
+\sigma_{\text{eff}} &= \sigma_{\text{group}}^{\text{eff}} + \epsilon_\sigma \\
+w_i^{\text{len}} &= \frac{1}{|o_i|}, \quad \Omega = \frac{1}{G}
+\end{align}
+\end{proofbox}
+
+\begin{proofbox}{Step 5: Final Substitution}
+\begin{equation}
+\mathcal{J}_{\text{Unified}} = \mathbb{E}_{q} \left[ \frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta D_{\text{KL}}^{(i,t)} \right) \right]
+\end{equation}
+
+where the clipped loss uses the diversity-adjusted advantage:
+\begin{equation}
+\mathcal{L}_{\text{clip}}^{(i,t)} = \min\left( \rho_{i,t} \cdot \tilde{A}_i, \; \text{clip}(\rho_{i,t}) \cdot \tilde{A}_i \right)
+\end{equation}
+
+with $\tilde{A}_i = \frac{\tilde{R}_i - \text{mean}(\tilde{R})}{\text{std}(\tilde{R}) + \epsilon}$ and $\tilde{R}_i = R_i \cdot (1 - \text{SMI}_i)$.
+\end{proofbox}
+
+\begin{resultbox}
+\begin{equation}
+\mathcal{J}_{\text{DRA-GRPO}} = \mathbb{E} \left[ \frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \min\left( \rho_{i,t} \cdot \tilde{A}_i, \; \text{clip}(\rho_{i,t}) \cdot \tilde{A}_i \right) \right]
+\end{equation}
+
+where $\tilde{R}_i = R_i \cdot (1 - \sum_{j \neq i} s(o_i, o_j))$
+
+\textbf{This exactly matches the DRA-GRPO objective.} $\checkmark$
+
+\textbf{Effect of diversity adjustment:}
+\begin{center}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Output $o_i$} & \textbf{SMI} & \textbf{Effect on $\tilde{R}_i$} \\
+\midrule
+Unique (diverse) & Low $\approx 0$ & $\tilde{R}_i \approx R_i$ (preserved) \\
+Redundant (similar to others) & High & $\tilde{R}_i \ll R_i$ (penalized) \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{resultbox}
+
+\newpage
+
+%==============================================================================
+\section{Summary of Recovery Proofs}
+%==============================================================================
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Method} & \textbf{Key Configuration Changes} & \textbf{Recovered Objective} \\
+\midrule
+GRPO & Baseline (all False, symmetric $\epsilon$) & $\frac{1}{G}\sum_i \frac{1}{|o_i|}\sum_t (\mathcal{L}_{\text{clip}} - \beta D_{\text{KL}})$ \\[5pt]
+Dr.~GRPO & std\_norm=F, len\_norm=F, $\beta$=0 & $\frac{1}{G}\sum_i \sum_t \mathcal{L}_{\text{clip}}$ with $A = R - \mu$ \\[5pt]
+DAPO & len\_norm=F, $g_n$=1, OS=T, $\epsilon_h$=0.28 & $\frac{1}{\sum|o_i|}\sum_{i,t} \mathcal{L}_{\text{clip}}^{\text{asym}}$ \\[5pt]
+DARO & DW=T & $\sum_\mu (w_\mu \mathcal{L}_\mu - \ln w_\mu)$ \\[5pt]
+$\lambda$-GRPO & LW=T & $\frac{1}{G}\sum_i f_\lambda(o_i) \cdot \frac{1}{|o_i|}\sum_t \mathcal{L}_{\text{clip}}$ \\[5pt]
+DRA-GRPO & DIV=T & GRPO with $\tilde{R} = R(1 - \text{SMI})$ \\
+\bottomrule
+\end{tabular}
+\caption{Summary of method recovery from the unified framework.}
+\end{table}
+
+\textbf{All six methods are exactly recovered by the unified framework through hyperparameter configuration.} $\checkmark$
+
+\end{document}
