@@ -1,33 +1,30 @@
-# grpo-composer
+# Unified GRPO Framework v4
 
-> **A Unified, Component-Driven Library for Critic-Free Reinforcement Learning in Large Language Models**
+## Overview
+This repository contains a unified mathematical framework for six Group Relative Policy Optimization (GRPO) variants. The framework consolidates these methods into a single objective function with configurable hyperparameters, allowing for the recovery of individual methods as well as the creation of hybrid configurations.
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+## Supported Methods
+The framework unifies the following variants:
+1.  **GRPO** (DeepSeekMath, 2024)
+2.  **Dr. GRPO** (Bias-Free, 2025)
+3.  **DAPO** (ByteDance, 2025)
+4.  **DARO** (Difficulty-Aware, 2025)
+5.  **$\lambda$-GRPO** (Token Preferences, 2025)
+6.  **DRA-GRPO** (Diversity-Aware, 2025)
 
-## 🚀 Quick Start
+## Unified Objective
+The master objective function is defined as:
 
-```bash
-pip install grpo-composer
-```
+$$
+\mathcal{J}_{\text{Unified}}(\theta, \{w_\mu\}, \lambda) = \sum_{\mu \in \mathcal{M}} w_\mu^{\text{eff}} \cdot \mathbb{E}_{q: \mu_q = \mu} \left[ \mathbb{I}_{\text{OS}}(q) \cdot \frac{1}{\Omega_\mu} \sum_{i=1}^{G} f_\lambda(o_i) \cdot w_i^{\text{len}} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta \cdot D_{\text{KL}}^{(i,t)} \right) \right] + \mathcal{L}_{\text{reg}}
+$$
 
-```python
-from grpo_composer import GRPOTrainer
-from grpo_composer.rewards import FrequencyAwareReward
-from grpo_composer.advantages import KalmanAdvantage
+## Configuration
+The framework is controlled by 19 hyperparameters, including:
+-   **Clipping**: `epsilon_low`, `epsilon_high`
+-   **Normalization**: `std_normalize`, `length_norm`, `group_norm_type`
+-   **Regularization**: `beta` (KL penalty)
+-   **Sampling**: `oversampling`, `group_size`
+-   **Weighting**: `difficulty_weighting`, `lambda_weighting`, `diversity_weighting`
 
-trainer = GRPOTrainer(
-    model=model,
-    reward_engine=FrequencyAwareReward(),  # GAPO
-    advantage_estimator=KalmanAdvantage(), # KRPO
-)
-trainer.train(dataset)
-```
-
-## 📚 Supported Papers (22)
-
-KRPO, GAPO, Dr.GRPO, DRA-GRPO, DAPO, DARO, λ-GRPO, GDPO, GRPO-LEAD, MS-GRPO, P-GRPO, PVPO, RankGRPO, Unlikeliness-GRPO, SPO, Stratified-GRPO, TIC-GRPO, TR-GRPO, XRPO, AMIR-GRPO, Info-GRPO
-
-## 📄 License
-
-MIT License
+Refer to the mathematical documentation for detailed derivations and recovery proofs.
