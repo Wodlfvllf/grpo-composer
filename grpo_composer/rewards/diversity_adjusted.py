@@ -15,6 +15,8 @@ We instantiate SMI using the Graph-Cut function over a similarity kernel s(·,·
 SMI({o_i}, C \ {o_i}) = Σ_{j ∈ C \ {o_i}} s(o_i, j)
 """ 
 
+import torch
+from .base import RewardCalculator
 
 
 class DiversityAdjustedRewardCalculator(RewardCalculator):
