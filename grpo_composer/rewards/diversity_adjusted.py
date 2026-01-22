@@ -73,9 +73,23 @@ class DiversityAdjustedRewardCalculator(RewardCalculator):
 
             # Calculate SMI for this prompt
             smi_scores[batch_idx] = torch.sum(sim_matrix, dim = -1) - torch.diagonal(sim_matrix)
-            
+
         return smi_scores
 
     def calculate(self):
-        self._calculate_smi()
-        return self.rewards
+        """
+        Apply DRA-GRPO diversity adjustment.
+        
+        Returns:
+            adjusted_rewards: torch.Tensor, shape (batch_size, num_completions)
+        """
+        # Compute SMI scores for all completions
+        smi_scores = self._calculate_smi()
+        
+        # Shape: (batch_size, num_completions)
+        
+        # Apply DRA-GRPO formula: adjusted = reward / (1 + SMI)
+        adjusted_rewards = self.rewards / (1.0 + smi_scores + self.epsilon)
+        # Shape: (batch_size, num_completions)
+        
+        return adjusted_rewards
