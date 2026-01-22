@@ -47,20 +47,34 @@ class DiversityAdjustedRewardCalculator(RewardCalculator):
 
     def _calculate_smi(self):
         """
-        Calculate Submodular Mutual Information (SMI) between query completion o_i and the remaining completions C \ {o_i}.
+        Calculate Submodular Mutual Information (SMI) for all completions.
+        
+        SMI(o_i) = sum_{j != i} similarity(o_i, o_j)
+        
+        Returns:
+            smi_scores: torch.Tensor, shape (batch_size, num_completions)
         """
+
         # shape of the self.rewards is (Batch_size, num_completions(group_size))
         # there would be Batch_size number of smi calculations for each prompt.
         # Also SMI would be calculated on Embeddings and then rewards would be calculated on top of it.
         # Embedding shape is (Batch_size, num_completions(group_size), hidden_size)
-        batch_size, group_size = self.rewards.shape
-        
-        for indx in range(batch_size):
-            rewards = self.rewards[indx]
-            smi_matrix = (self.embedding[indx].T @ self.embedding[indx])
-            smi_score = torch.sum(smi_matrix) - smi_matrix[indx][indx]
-            rewards[indx] = rewards[indx] / (1 + smi_score)
-            self.rewards[indx] = rewards
+        batch_size, num_completions, hidden_size = self.embedding.shape
+        # Initialize tensor to store SMI scores
+        smi_scores = torch.zeros(batch_size, num_completions, device=self.rewards.device)
+
+        # Process each batch independently
+        for batch_idx in range(batch_size):
+            # Get embeddings for this prompt's group
+            prompt_embeddings = self.embedding[batch_idx]  # (num_completions, hidden_size)
+
+            # Compute similarity matrix
+            sim_matrix = self._compute_similarity(prompt_embeddings)
+
+            # Calculate SMI for this prompt
+            smi_scores[batch_idx] = torch.sum(sim_matrix, dim = -1) - torch.diagonal(sim_matrix)
+            
+        return smi_scores
 
     def calculate(self):
         self._calculate_smi()
