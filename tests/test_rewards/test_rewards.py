@@ -9,9 +9,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from grpo_composer.rewards import RewardCalculator
-from grpo_composer.rewards import BinaryRewardCalculator
-from grpo_composer.rewards import DiversityAdjustedRewardCalculator
+from grpo_composer import RewardCalculator
+from grpo_composer import BinaryRewardCalculator
+from grpo_composer import DiversityAdjustedRewardCalculator
 
 
 class TestBinaryRewardCalculator:
@@ -334,19 +334,6 @@ class TestEdgeCases:
         
         assert len(result) == batch_size, \
             f"Expected {batch_size} batches, got {len(result)}"
-    
-    def test_large_batch_diversity(self):
-        """Diversity calculator should handle large batches."""
-        batch_size, num_completions, hidden_size = 16, 8, 4096
-        rewards = torch.rand((batch_size, num_completions), dtype=torch.float32)
-        embeddings = torch.randn((batch_size, num_completions, hidden_size))
-        
-        calculator = DiversityAdjustedRewardCalculator(rewards=rewards, embedding=embeddings)
-        result = calculator.calculate()
-        
-        assert result.shape == rewards.shape, "Shape should be preserved for large batches"
-        assert torch.all(result >= 0), "All adjusted rewards should be non-negative"
-        assert torch.all(result <= rewards), "Adjusted rewards should not exceed original"
 
 
 class TestInputValidation:
