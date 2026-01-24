@@ -1,59 +1,64 @@
 """
-GDPO: Group reward-Decoupled Normalization Policy Optimization
-for Multi-reward RL Optimization
-This module implements GDPO's core innovation: decoupled normalization
-of multiple rewards to preserve per-reward distinctions and prevent
-reward collapse in multi-objective RL training.
+Multi-Reward Processor (GDPO)
+
+Group reward-Decoupled Normalization Policy Optimization for multi-reward RL.
 
 Key Innovation:
-    GRPO: Normalize(Sum(r₁, r₂, ...))  → Reward collapse
-    GDPO: Sum(Normalize(r₁), Normalize(r₂), ...) → Preserves distinctions
+    GRPO:  Normalize(Sum(r₁, r₂, ...))    → Reward collapse
+    GDPO:  Sum(Normalize(r₁), Normalize(r₂), ...) → Preserves distinctions
 
-Mathematical Formulation:
-    For each reward dimension k and rollout j in group i:
+Formula:
+    1. Per-reward group normalization:
+       A_k^(i,j) = (r_k^(i,j) - μ_k^(i)) / (σ_k^(i) + ε)
     
-    A_k^(i,j) = (r_k^(i,j) - μ_k^(i)) / (σ_k^(i) + ε)
+    2. Weighted aggregation:
+       A_sum^(i,j) = Σ_k w_k · A_k^(i,j)
     
-    A_sum^(i,j) = Σ_k w_k · A_k^(i,j)
-    
-    Â_sum^(i,j) = (A_sum^(i,j) - μ_batch) / (σ_batch + ε)
+    3. Optional batch normalization:
+       Â_sum^(i,j) = (A_sum^(i,j) - μ_batch) / (σ_batch + ε)
 
-Where:
-    - i: Prompt/question index (1 to B batch size)
-    - j: Rollout index within group (1 to G rollouts per prompt)
-    - k: Reward dimension (1 to N rewards)
-    - μ_k^(i): Mean of reward k across G rollouts for prompt i
-    - σ_k^(i): Std of reward k across G rollouts for prompt i
-    - w_k: Weight for reward k (default 1.0)
-    - μ_batch, σ_batch: Statistics across entire batch (B×G rollouts)
+Note: This class has a different API than RewardCalculator because it
+processes multiple reward dimensions, not transforms a single reward.
 
-Benefits over GRPO:
-    - Preserves 2^N advantage groups (vs N+1 for GRPO with binary rewards)
-    - Faithful multi-reward optimization
-    - Better convergence and stability
-    - Drop-in replacement for GRPO
+Input:  torch.Tensor of shape (batch_size, num_completions, num_rewards)
+Output: torch.Tensor of shape (batch_size, num_completions)
 """
 
-import numpy as np
 import torch
+import numpy as np
 from typing import List, Optional
 from dataclasses import dataclass
 
 
 @dataclass
 class RewardConfig:
+    """Configuration for a single reward dimension."""
     name: str
     weight: float = 1.0
     conditioned_on: Optional[str] = None
     condition_threshold: Optional[float] = None
 
 
-class GDPORewardProcessor:
+class MultiRewardProcessor:
     """
-    GDPO reward normalization: Normalize each reward separately, then aggregate.
+    GDPO: Decoupled normalization for multi-reward RL.
     
-    Input:  rewards shape (B, G, N) - B prompts, G rollouts, N rewards
-    Output: normalized_rewards shape (B, G) - one value per rollout
+    Normalizes each reward dimension separately within groups, then
+    aggregates, preserving per-reward distinctions.
+    
+    Args:
+        reward_configs: List of RewardConfig for each reward dimension
+        epsilon: Numerical stability constant (default: 1e-8)
+        use_batch_norm: Apply batch-level normalization after aggregation
+    
+    Example:
+        >>> configs = [
+        ...     RewardConfig(name="safety", weight=1.0),
+        ...     RewardConfig(name="helpfulness", weight=1.0),
+        ... ]
+        >>> processor = MultiRewardProcessor(configs)
+        >>> rewards = torch.rand(4, 8, 2)  # (B=4, G=8, N=2)
+        >>> normalized = processor.compute_rewards(rewards)  # (4, 8)
     """
     
     def __init__(
@@ -61,14 +66,18 @@ class GDPORewardProcessor:
         reward_configs: List[RewardConfig],
         epsilon: float = 1e-8,
         use_batch_norm: bool = True
-    ):
+    ) -> None:
         self.reward_configs = reward_configs
         self.epsilon = epsilon
         self.use_batch_norm = use_batch_norm
         self.reward_to_idx = {cfg.name: i for i, cfg in enumerate(reward_configs)}
     
     def _apply_conditioning(self, rewards: torch.Tensor) -> torch.Tensor:
-        """Apply reward conditioning: r_k = 0 if dependency r_l < threshold"""
+        """
+        Apply reward conditioning: zero out reward if dependency not met.
+        
+        r_k = 0 if dependency r_l < threshold
+        """
         conditioned = rewards.clone()
         
         for i, cfg in enumerate(self.reward_configs):
@@ -94,11 +103,14 @@ class GDPORewardProcessor:
         """
         group_means = rewards.mean(dim=1, keepdim=True)  # (B, 1, N)
         group_stds = rewards.std(dim=1, keepdim=True)    # (B, 1, N)
-        normalized = (rewards - group_means) / (group_stds + self.epsilon)
-        return normalized
+        return (rewards - group_means) / (group_stds + self.epsilon)
     
     def _aggregate(self, normalized: torch.Tensor) -> torch.Tensor:
-        """Weighted sum: r̃_sum^(i,j) = Σ_k w_k · r̃_k^(i,j)"""
+        """
+        Weighted sum across reward dimensions.
+        
+        r̃_sum^(i,j) = Σ_k w_k · r̃_k^(i,j)
+        """
         B, G, N = normalized.shape
         weights = torch.tensor(
             [cfg.weight for cfg in self.reward_configs],
@@ -120,16 +132,24 @@ class GDPORewardProcessor:
     
     def compute_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
         """
-        Main method: Transform raw rewards using GDPO normalization.
+        Transform raw multi-dimensional rewards using GDPO normalization.
         
         Args:
-            rewards: (B, G, N) raw reward values
+            rewards: shape (batch_size, num_completions, num_rewards)
         
         Returns:
-            normalized_rewards: (B, G) normalized reward scalars
+            normalized_rewards: shape (batch_size, num_completions)
         """
         if isinstance(rewards, np.ndarray):
             rewards = torch.from_numpy(rewards).float()
+        
+        # Validate shape
+        if rewards.ndim != 3:
+            raise ValueError(f"Rewards must be 3D (B, G, N), got shape {rewards.shape}")
+        if rewards.shape[2] != len(self.reward_configs):
+            raise ValueError(
+                f"Expected {len(self.reward_configs)} rewards, got {rewards.shape[2]}"
+            )
         
         conditioned = self._apply_conditioning(rewards)
         normalized = self._group_normalize(conditioned)
@@ -137,5 +157,4 @@ class GDPORewardProcessor:
         
         if self.use_batch_norm:
             return self._batch_normalize(aggregated)
-        else:
-            return aggregated
+        return aggregated
