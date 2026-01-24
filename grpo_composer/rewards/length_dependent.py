@@ -2,9 +2,6 @@
 GRPO-LEAD: A Difficulty-Aware Reinforcement Learning Approach for
 Concise Mathematical Reasoning in Language Models
 
-Paper: https://arxiv.org/abs/2504.09696
-Authors: EMNLP 2025
-
 This module implements the Length-Dependent Accuracy Reward component
 of GRPO-LEAD, which encourages concise mathematical reasoning by
 penalizing verbose solutions while maintaining correctness.
@@ -87,15 +84,29 @@ class GRPOLEADReward:
                 "GRPO-LEAD requires at least one correct response in the group."
             )
 
-
+    def _get_response_length(self, response: Union[List[int]]) -> int:
+        """
+        Get token length of a response.
+        
+        Args:
+            response: List of tokens
+        
+        Returns:
+            Number of tokens (for list of numbers)
+        """
+        if isinstance(response, list):
+            return len(response)
+        else:
+            raise TypeError(f"Response must be list of numbers, got {type(response)}")
+            
     def compute_rewards(self):
-        mean_length = np.mean([len(response) for response in self.responses])
-        std_length = np.std([len(response) for response in self.responses])
+        mean_length = np.mean([self._get_response_length(response) for idx, response in enumerate(self.responses) if self.labels[idx] == 1])
+        std_length = np.std([self._get_response_length(response) for idx, response in enumerate(self.responses) if self.labels[idx] == 1])
 
         rewards_standardized = []
         for idx, response in enumerate(self.responses):
             if self.labels[idx] == 1:
-                z = (len(response) - mean_length) / (std_length + self.epsilon)
+                z = (self._get_response_length(response) - mean_length) / (std_length + self.epsilon)
                 reward = np.exp(-self.alpha * z)
             else:
                 reward = -1
