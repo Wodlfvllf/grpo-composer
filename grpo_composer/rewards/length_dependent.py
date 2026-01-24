@@ -1,115 +1,131 @@
 """
-GRPO-LEAD: A Difficulty-Aware Reinforcement Learning Approach for
-Concise Mathematical Reasoning in Language Models
+Length-Dependent Reward Calculator (GRPO-LEAD)
 
-This module implements the Length-Dependent Accuracy Reward component
-of GRPO-LEAD, which encourages concise mathematical reasoning by
-penalizing verbose solutions while maintaining correctness.
+Implements length-dependent accuracy reward that encourages concise
+mathematical reasoning by penalizing verbose solutions.
 
-Key Formula:
+Formula:
     z_i = (length(o_i) - μ) / (σ + ε)
-    
     R_accuracy(o|q) = exp(-α * z_i),  if o is correct
                     = -1,              if o is incorrect
 
 Where:
-    - μ: Mean length of CORRECT responses only (not all responses)
-    - σ: Standard deviation of CORRECT response lengths only
+    - μ: Mean length of CORRECT responses only
+    - σ: Standard deviation of CORRECT response lengths
     - z_i: Standardized length deviation
     - α: Length penalty strength (paper uses α=0.05)
-    - ε: Numerical stability constant (small value like 1e-8)
+    - ε: Numerical stability constant
 
-Critical Design Decisions:
-    1. Statistics (μ, σ) computed ONLY over correct responses
-    2. Incorrect responses get fixed penalty of -1 (not 0)
-    3. Exponential decay exp(-αz) means:
-       - Shorter correct responses get reward > 1.0 (boost)
-       - Longer correct responses get reward < 1.0 (penalty)
-       - At mean length: z=0, reward = 1.0 (neutral)
+Design:
+    - Statistics computed ONLY over correct responses
+    - Incorrect responses get fixed penalty of -1
+    - Shorter correct responses get reward > 1.0 (boost)
+    - Longer correct responses get reward < 1.0 (penalty)
 
+Input:  
+    responses: List of token sequences (List[List[int]])
+    labels: Binary correctness labels (1=correct, 0=incorrect)
+Output: 
+    torch.Tensor of shape (num_completions,)
 """
 
-class GRPOLEADReward:
+import torch
+import numpy as np
+from typing import List, Union
+from .base import RewardCalculator
+
+
+class LengthDependentRewardCalculator(RewardCalculator):
     """
-    Length-Dependent Accuracy Reward for GRPO-LEAD.
+    GRPO-LEAD: Length-Dependent Accuracy Reward.
     
-    Implements dynamic reward shaping that promotes brevity among correct
-    responses using standardized length-based penalties, reducing verbosity
-    without sacrificing accuracy.
+    Promotes brevity among correct responses using standardized
+    length-based penalties.
     
-    Attributes:
-        responses (List[str]): Generated model responses/completions
-        labels (List[int]): Binary labels (1=correct, 0=incorrect)
-        alpha (float): Length penalty strength (default: 0.05 from paper)
-        epsilon (float): Numerical stability constant (default: 1e-8)
+    Args:
+        responses: List of token sequences (each is List[int])
+        labels: Binary correctness labels (1=correct, 0=incorrect)
+        alpha: Length penalty strength (default: 0.05 from paper)
+        epsilon: Numerical stability constant (default: 1e-8)
     
     Example:
-        >>> responses = ["solution 1", "solution 2 longer", "wrong"]
-        >>> labels = [1, 1, 0]  # First two correct, last incorrect
-        >>> reward_calc = GRPOLEADReward(responses, labels, alpha=0.05)
-        >>> rewards = reward_calc.compute_rewards()
-        >>> print(rewards)
-        [1.05, 0.95, -1.0]  # Shorter correct boosted, longer penalized, wrong=-1
+        >>> responses = [[1,2,3], [1,2,3,4,5,6], [1,2]]
+        >>> labels = [1, 1, 0]
+        >>> calc = LengthDependentRewardCalculator(responses, labels)
+        >>> rewards = calc.compute_rewards()
+        # Short correct boosted, long correct penalized, wrong = -1
     """
-    def __init__(self, responses, labels, alpha, epsilon):
-        """
-        Initialize GRPO-LEAD reward calculator.
+    
+    def __init__(
+        self,
+        responses: List[List[int]],
+        labels: List[int],
+        alpha: float = 0.05,
+        epsilon: float = 1e-8,
+        incorrect_penalty: float = -1.0,
+        **kwargs
+    ) -> None:
+        # Create dummy rewards for base class
+        dummy_rewards = torch.zeros(len(responses))
+        super().__init__(dummy_rewards, **kwargs)
         
-        Args:
-            responses: List of G generated responses (strings or token sequences)
-            labels: Binary correctness labels (1=correct, 0=incorrect)
-            alpha: Length penalty strength. Paper uses α=0.05.
-                   Higher α → stronger penalty for verbosity
-                   Lower α → more tolerance for longer solutions
-            epsilon: Small constant for numerical stability in std calculation
-        
-        Raises:
-            ValueError: If responses and labels have different lengths
-            ValueError: If no correct responses exist (can't compute statistics)
-        """
         if len(responses) != len(labels):
             raise ValueError(
-                f"Mismatch: {len(responses)} responses but {len(labels)} labels"
+                f"Length mismatch: {len(responses)} responses but {len(labels)} labels"
             )
-
+        
         self.responses = responses
         self.labels = labels
         self.alpha = alpha
         self.epsilon = epsilon
-
+        self.incorrect_penalty = incorrect_penalty
+        
         # Validate we have at least one correct response
         if sum(labels) == 0:
             raise ValueError(
-                "No correct responses found. Cannot compute length statistics. "
-                "GRPO-LEAD requires at least one correct response in the group."
+                "No correct responses found. GRPO-LEAD requires at least "
+                "one correct response to compute length statistics."
             )
 
-    def _get_response_length(self, response: Union[List[int]]) -> int:
+    def _get_length(self, response: List[int]) -> int:
+        """Get token length of a response."""
+        if not isinstance(response, list):
+            raise TypeError(f"Response must be list of tokens, got {type(response)}")
+        return len(response)
+    
+    def _compute_length_stats(self) -> tuple:
         """
-        Get token length of a response.
-        
-        Args:
-            response: List of tokens
+        Compute mean and std of CORRECT response lengths.
         
         Returns:
-            Number of tokens (for list of numbers)
+            (mean_length, std_length)
         """
-        if isinstance(response, list):
-            return len(response)
-        else:
-            raise TypeError(f"Response must be list of numbers, got {type(response)}")
-            
-    def compute_rewards(self):
-        mean_length = np.mean([self._get_response_length(response) for idx, response in enumerate(self.responses) if self.labels[idx] == 1])
-        std_length = np.std([self._get_response_length(response) for idx, response in enumerate(self.responses) if self.labels[idx] == 1])
+        correct_lengths = [
+            self._get_length(resp) 
+            for resp, label in zip(self.responses, self.labels) 
+            if label == 1
+        ]
+        mean_length = np.mean(correct_lengths)
+        std_length = np.std(correct_lengths)
+        return mean_length, std_length
 
-        rewards_standardized = []
-        for idx, response in enumerate(self.responses):
-            if self.labels[idx] == 1:
-                z = (self._get_response_length(response) - mean_length) / (std_length + self.epsilon)
-                reward = np.exp(-self.alpha * z)
+    def compute_rewards(self) -> torch.Tensor:
+        """
+        Compute length-dependent rewards.
+        
+        Returns:
+            torch.Tensor of shape (num_completions,)
+        """
+        mean_length, std_length = self._compute_length_stats()
+        
+        rewards = []
+        for response, label in zip(self.responses, self.labels):
+            if label == 1:
+                length = self._get_length(response)
+                z = (length - mean_length) / (std_length + self.epsilon)
+                reward = float(np.exp(-self.alpha * z))
             else:
-                reward = -1
-            rewards_standardized.append(reward)
-
-        return np.array(rewards_standardized)
+                reward = self.incorrect_penalty
+            rewards.append(reward)
+        
+        return torch.tensor(rewards, dtype=torch.float32)
