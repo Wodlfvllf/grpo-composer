@@ -35,7 +35,7 @@ from typing import List, Union
 from .base import RewardCalculator
 
 
-class LengthDependentRewardCalculator(RewardCalculator):
+class LengthDependentRewardCalculator:
     """
     GRPO-LEAD: Length-Dependent Accuracy Reward.
     
@@ -43,83 +43,98 @@ class LengthDependentRewardCalculator(RewardCalculator):
     length-based penalties.
     
     Args:
-        responses: List of token sequences (each is List[int])
-        labels: Binary correctness labels (1=correct, 0=incorrect)
         alpha: Length penalty strength (default: 0.05 from paper)
         epsilon: Numerical stability constant (default: 1e-8)
+        incorrect_penalty: Reward for incorrect responses (default: -1.0)
     
     Example:
+        >>> calc = LengthDependentRewardCalculator(alpha=0.05)
         >>> responses = [[1,2,3], [1,2,3,4,5,6], [1,2]]
-        >>> labels = [1, 1, 0]
-        >>> calc = LengthDependentRewardCalculator(responses, labels)
-        >>> rewards = calc.compute_rewards()
+        >>> labels = torch.tensor([1, 1, 0])
+        >>> rewards = calc.compute_rewards(responses, labels)
         # Short correct boosted, long correct penalized, wrong = -1
     """
     
     def __init__(
         self,
-        responses: List[List[int]],
-        labels: List[int],
         alpha: float = 0.05,
         epsilon: float = 1e-8,
-        incorrect_penalty: float = -1.0,
-        **kwargs
+        incorrect_penalty: float = -1.0
     ) -> None:
-        # Create dummy rewards for base class
-        dummy_rewards = torch.zeros(len(responses))
-        super().__init__(dummy_rewards, **kwargs)
-        
-        if len(responses) != len(labels):
-            raise ValueError(
-                f"Length mismatch: {len(responses)} responses but {len(labels)} labels"
-            )
-        
-        self.responses = responses
-        self.labels = labels
         self.alpha = alpha
         self.epsilon = epsilon
         self.incorrect_penalty = incorrect_penalty
-        
-        # Validate we have at least one correct response
-        if sum(labels) == 0:
-            raise ValueError(
-                "No correct responses found. GRPO-LEAD requires at least "
-                "one correct response to compute length statistics."
-            )
 
     def _get_length(self, response: List[int]) -> int:
         """Get token length of a response."""
-        if not isinstance(response, list):
-            raise TypeError(f"Response must be list of tokens, got {type(response)}")
         return len(response)
     
-    def _compute_length_stats(self) -> tuple:
+    def _compute_length_stats(
+        self, 
+        responses: List[List[int]], 
+        labels: torch.Tensor
+    ) -> tuple:
         """
         Compute mean and std of CORRECT response lengths.
         
+        Args:
+            responses: List of token sequences
+            labels: (N,) binary correctness labels
+            
         Returns:
             (mean_length, std_length)
         """
         correct_lengths = [
             self._get_length(resp) 
-            for resp, label in zip(self.responses, self.labels) 
+            for resp, label in zip(responses, labels.tolist()) 
             if label == 1
         ]
+        if len(correct_lengths) == 0:
+            return 0.0, 1.0  # Fallback if no correct responses
+            
         mean_length = np.mean(correct_lengths)
         std_length = np.std(correct_lengths)
         return mean_length, std_length
 
-    def compute_rewards(self) -> torch.Tensor:
+    def compute_rewards(
+        self, 
+        responses: List[List[int]], 
+        labels: torch.Tensor
+    ) -> torch.Tensor:
         """
         Compute length-dependent rewards.
         
+        Args:
+            responses: List of token sequences (each is List[int])
+            labels: (N,) or (B, G) binary correctness labels (1=correct, 0=incorrect)
+        
         Returns:
-            torch.Tensor of shape (num_completions,)
+            torch.Tensor of same shape as labels
         """
-        mean_length, std_length = self._compute_length_stats()
+        # Handle batched input (B, G)
+        if labels.dim() == 2:
+            B, G = labels.shape
+            flat_labels = labels.view(-1)
+            # Flatten responses if nested
+            if isinstance(responses[0][0], list):
+                flat_responses = [r for batch in responses for r in batch]
+            else:
+                flat_responses = responses
+            flat_rewards = self._compute_single(flat_responses, flat_labels)
+            return flat_rewards.view(B, G)
+        
+        return self._compute_single(responses, labels)
+    
+    def _compute_single(
+        self, 
+        responses: List[List[int]], 
+        labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute rewards for flat list of responses."""
+        mean_length, std_length = self._compute_length_stats(responses, labels)
         
         rewards = []
-        for response, label in zip(self.responses, self.labels):
+        for response, label in zip(responses, labels.tolist()):
             if label == 1:
                 length = self._get_length(response)
                 z = (length - mean_length) / (std_length + self.epsilon)
