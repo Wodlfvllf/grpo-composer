@@ -21,3 +21,17 @@ Mathematical Form:
 Benefit:
     Stable learning signal even under severe reward sparsity
 """
+
+class StaticValueAdvantageFunction(AdvantageFunction):
+    def __init__(self, epsilon: float = 1e-8):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def compute_advantages(self, rewards: torch.Tensor, reference_rewards: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            rewards: (B, G) rewards
+        Returns:
+            advantages: (B, G) static value advantages
+        """
+        return rewards - reference_rewards.mean(dim=-1, keepdim=True)
