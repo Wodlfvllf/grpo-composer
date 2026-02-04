@@ -14,3 +14,21 @@ Different papers modify these aggregation strategies:
 - TIC-GRPO: Trajectory-level aggregation
 - TR-GRPO: Probability-weighted token aggregation
 """
+from abc import ABC, abstractmethod
+
+class AggregationFunction(ABC):
+    @abstractmethod
+    def compute_aggregation(
+        self,
+        loss_clipped: torch.Tensor,
+        ) -> torch.Tensor:
+        """
+        Compute aggregation.
+        
+        Args:
+            loss_clipped: (B, G, T)
+            
+        Returns:
+            aggregation: (B, G) aggregation
+        """
+        pass
