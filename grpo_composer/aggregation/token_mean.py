@@ -16,6 +16,9 @@ Effect:
 """
 from ..advantages import *
 from ..clipping import *
+import torch 
+import torch.nn as nn
+from .base import AggregationFunction
 
 class TokenMeanAggregation(AggregationFunction):
     def __init__(self):
@@ -41,19 +44,16 @@ class TokenMeanAggregation(AggregationFunction):
         clipped_ratio = AsymmetricClippingMechanism().clip(ratio)
 
         # 4. PPO-style min
-        ratio_min = torch.minimum(ratio, clipped_ratio)
+        ratio_min = torch.minimum(ratio* advantage.unsqueeze(-1), clipped_ratio* advantage.unsqueeze(-1))
 
-        # 5. Multiply by advantage
-        loss_per_token = ratio_min * advantage.unsqueeze(-1)  # (B, G, T)
+        # 5. Mask padding tokens
+        loss_per_token = ratio_min * mask
 
-        # 6. Mask padding tokens
-        loss_per_token = loss_per_token * mask
-
-        # 7. Token mean per sequence
+        # 6. Token mean per sequence
         token_count = mask.sum(dim=-1)  # (B, G)
-        seq_loss = loss_per_token.sum(dim=-1) / token_count  # (B, G)
+        seq_loss = loss_per_token.sum(dim=-1) / (token_count + 1e-8)  # (B, G)
 
-        # 8. Group mean
+        # 7. Group mean
         loss = seq_loss.mean(dim=-1).mean()
 
         return loss
