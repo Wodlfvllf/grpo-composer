@@ -55,6 +55,12 @@ class TrajectoryLevelClippingMechanism(ClippingMechanism):
         """
         Compute trajectory-level probability ratio.
         
+        Shape Flow:
+            Input:  log_probs (B, G, T), ref_log_probs (B, G, T), attention_mask (B, G, T)
+            Step 1: log_ratio (B, G, T)
+            Step 2: trajectory_log_ratio (B, G) - sum over T dimension
+            Step 3: trajectory_ratio (B, G) - exp to convert back to ratio space
+        
         Args:
             log_probs: (B, G, T) log probs under current policy
             ref_log_probs: (B, G, T) log probs under reference policy
@@ -63,18 +69,25 @@ class TrajectoryLevelClippingMechanism(ClippingMechanism):
         Returns:
             trajectory_ratio: (B, G) ratio of trajectory probabilities
         """
-        # Log-ratio per token
-        log_ratio = log_probs - ref_log_probs  # (B, G, T)
+        # 1. Log-ratio per token
+        # log_probs - ref_log_probs: (B, G, T) - (B, G, T) → (B, G, T)
+        log_ratio = log_probs - ref_log_probs
         
         if attention_mask is not None:
-            # Sum only over valid tokens
+            # 2a. Mask invalid tokens, then sum over T
+            # log_ratio * attention_mask: (B, G, T) * (B, G, T) → (B, G, T)
+            # .sum(dim=-1): (B, G, T) → (B, G)
             log_ratio = log_ratio * attention_mask
-            trajectory_log_ratio = log_ratio.sum(dim=-1)  # (B, G)
+            trajectory_log_ratio = log_ratio.sum(dim=-1)
         else:
-            trajectory_log_ratio = log_ratio.sum(dim=-1)  # (B, G)
+            # 2b. Sum all tokens over T dimension
+            # log_ratio.sum(dim=-1): (B, G, T) → (B, G)
+            trajectory_log_ratio = log_ratio.sum(dim=-1)
         
-        # Convert back to ratio space
-        trajectory_ratio = torch.exp(trajectory_log_ratio)  # (B, G)
+        # 3. Convert back to ratio space
+        # exp(trajectory_log_ratio): (B, G) → (B, G)
+        # This is: exp(Σ_t log(π/π_old)) = Π_t (π/π_old) = trajectory ratio
+        trajectory_ratio = torch.exp(trajectory_log_ratio)
         
         return trajectory_ratio
     
@@ -88,6 +101,11 @@ class TrajectoryLevelClippingMechanism(ClippingMechanism):
         """
         Apply upper-only clipping at trajectory level.
         
+        Shape Flow:
+            Input:  probs_ratio (B, G) OR log_probs (B, G, T) + ref_log_probs (B, G, T)
+            Step 1: probs_ratio (B, G) - trajectory-level ratio
+            Step 2: clipped (B, G) - upper-only clipped ratio
+        
         Can accept either:
         - probs_ratio: Pre-computed trajectory-level ratio (B, G)
         - log_probs + ref_log_probs: To compute trajectory ratio internally
@@ -95,16 +113,19 @@ class TrajectoryLevelClippingMechanism(ClippingMechanism):
         Returns:
             clipped_ratio: (B, G) trajectory-level clipped ratios
         """
+        # 1. Get trajectory-level ratio
         if probs_ratio is None:
             if log_probs is None or ref_log_probs is None:
                 raise ValueError(
                     "Must provide either probs_ratio or (log_probs, ref_log_probs)"
                 )
+            # Compute from log probs: (B, G, T), (B, G, T) → (B, G)
             probs_ratio = self.compute_trajectory_ratio(
                 log_probs, ref_log_probs, attention_mask
             )
         
-        # Upper-only clipping (TIC-GRPO characteristic)
+        # 2. Upper-only clipping (TIC-GRPO characteristic)
+        # probs_ratio: (B, G) → clipped: (B, G)
         if self.clip_lower is not None:
             clipped = torch.clamp(probs_ratio, min=self.clip_lower, max=self.clip_upper)
         else:
