@@ -34,8 +34,16 @@ from torch.utils.data import Dataset
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
 import random
+from .buffer import Buffer, BufferEntry
+from dataclasses import dataclass
+
+@dataclass
+class TrainingBatch:
+    # Shape would be (Batch_Size, Number_of_Rollouts, Length_of_prompt) (B, G, T)
+    sample : torch.tensor
 
 class BatchSampler(ABC):
     
     @abstractmethod
-    def sample(self, buffer, batch_size)
+    def sample(self, buffer : Buffer, batch_size : int) -> TrainingBatch:
+        pass
