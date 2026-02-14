@@ -31,3 +31,24 @@ Implemented by:
 
 Used for asynchronous generation and batching optimization.
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+from typing import List, Optional
+
+class RequestQueue(ABC):
+    @abstractmethod
+    def enqueue(self, requests: List[RolloutRequest]) -> None:
+        '''Add generation requests to queue.'''
+        pass
+
+    @abstractmethod
+    def dequeue(self, max_batch_size: int) -> List[RolloutRequest]:
+        '''Get next batch of requests for generation.'''
+        pass
+
+    @abstractmethod
+    def size(self) -> int:
+        '''Current queue size.'''
+        pass
