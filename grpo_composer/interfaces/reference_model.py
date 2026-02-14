@@ -24,3 +24,13 @@ def get_log_probs(
     pass
 ```
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+
+class ReferenceModel(ABC):
+    @abstractmethod
+    def get_log_probs(self, token_ids : torch.Tensor, attention_mask : torch.Tensor) -> torch.Tensor:
+        '''Compute reference log-probabilities for probability ratio and KL regularization.'''
+        pass
