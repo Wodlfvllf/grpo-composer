@@ -26,3 +26,25 @@ def generate(
     pass
 ```
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+from typing import List
+from dataclasses import dataclass
+
+@dataclass
+class RolloutRequest:
+    prompt : torch.Tensor
+    params : dict = field(default_factory = True)
+
+@dataclass
+class RolloutResult:
+    completion : torch.Tensor
+    log_probs : torch.Tensor
+
+class Generator(ABC):
+    @abstractmethod
+    def generate(self, requests : List[RolloutRequest]) -> List[RolloutResult]:
+        pass
+
