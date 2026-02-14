@@ -38,7 +38,7 @@ from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
 import random
 from collections import deque
-import dataclasses
+from dataclasses import dataclass
 
 @dataclass
 class BufferEntry:
@@ -60,4 +60,3 @@ class Buffer(ABC):
         pass
 
 
-    
