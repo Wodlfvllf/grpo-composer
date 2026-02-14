@@ -40,7 +40,7 @@ from dataclasses import dataclass
 @dataclass
 class TrainingBatch:
     # Shape would be (Batch_Size, Number_of_Rollouts, Length_of_prompt) (B, G, T)
-    sample : torch.tensor
+    sample : torch.Tensor
 
 class BatchSampler(ABC):
     
