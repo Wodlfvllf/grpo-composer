@@ -33,3 +33,18 @@ Training flow:
 5. Compute loss and optimize
 6. Update reference model if needed
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+
+class Trainer(ABC):
+    @abstractmethod
+    def train_step(self, prompts: List[str]) -> Dict[str, float]:
+        '''Execute one training iteration.'''
+        pass
+    
+    @abstractmethod
+    def train(self) -> None:
+        '''Run full training loop.'''
+        pass
