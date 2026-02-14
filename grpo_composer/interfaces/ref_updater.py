@@ -29,3 +29,17 @@ def update(
     pass
 ```
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+
+class RefModelUpdater(ABC):
+    @abstractmethod
+    def should_update(self, step : int) -> bool:
+        '''Check if ref model should be updated this step.'''
+        pass
+
+    def update(self, ref_model : nn.Module, policy_model : nn.Module) -> None:
+        '''Update ref model parameters from policy.'''
+        pass
