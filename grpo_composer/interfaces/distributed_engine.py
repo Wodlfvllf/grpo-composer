@@ -31,3 +31,24 @@ Implemented by:
 
 Abstracts away distributed framework differences.
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod, classmethod
+from typing import List, Optional, Dict
+
+class DistributedEngine(ABC):
+    @abstractmethod
+    def initialize(self, config: Dict) -> None:
+        '''Initialize distributed backend (FSDP, DeepSpeed, etc).'''
+        pass
+
+    @abstractmethod
+    def wrap_model(self, model:nn.Module) -> nn.Module:
+        '''Wrap model for distributed training.'''
+        pass
+
+    @abstractmethod
+    def all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
+        '''Reduce tensor across all ranks.'''
+        pass
