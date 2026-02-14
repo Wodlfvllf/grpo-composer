@@ -25,3 +25,14 @@ def compute_rewards(
     pass
 ```
 """
+
+import torch
+import torch.nn as nn
+from abc import ABC, abstractmethod
+from typing import List, Optional
+
+class RewardEvaluator(ABC):
+    @abstractmethod
+    def compute_rewards(self, prompts : List[str], completions : List[str]) -> torch.Tensor:
+        '''Return scalar reward for each completion.'''
+        pass
