@@ -31,18 +31,14 @@ Implemented by:
 - `rollouts/buffer/disk.py` - Persistent storage
 """
 
-import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
-from typing import List, Dict, Any, Optional
+from typing import List
 from abc import ABC, abstractmethod
-import random
-from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class BufferEntry:
-    buffer : list = field(default_factory = True)
+    buffer: list = field(default_factory=list)
 
 
 class Buffer(ABC):
