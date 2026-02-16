@@ -40,6 +40,7 @@ class RefModelUpdater(ABC):
         '''Check if ref model should be updated this step.'''
         pass
 
+    @abstractmethod
     def update(self, ref_model : nn.Module, policy_model : nn.Module) -> None:
         '''Update ref model parameters from policy.'''
         pass
