@@ -31,12 +31,12 @@ import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
 from typing import List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class RolloutRequest:
     prompt : torch.Tensor
-    params : dict = field(default_factory = True)
+    params : dict = field(default_factory = dict)
 
 @dataclass
 class RolloutResult:
