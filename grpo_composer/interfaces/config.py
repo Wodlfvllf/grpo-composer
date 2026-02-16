@@ -33,7 +33,7 @@ Implemented by:
 Used throughout codebase for type-safe configuration.
 """
 
-from abc import ABC, abstractmethod, classmethod
+from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 
@@ -50,6 +50,7 @@ class Config(ABC):
         pass
 
     @classmethod
-    def from_yaml(cls, ppath:str) -> 'Config':
-        '''Load config from YAML file.'''
-        pass
+    def from_yaml(cls, path: str):
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        return cls(**data)
