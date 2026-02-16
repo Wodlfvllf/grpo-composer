@@ -34,8 +34,8 @@ Abstracts away distributed framework differences.
 
 import torch
 import torch.nn as nn
-from abc import ABC, abstractmethod, classmethod
-from typing import List, Optional, Dict
+from abc import ABC, abstractmethod
+from typing import Dict
 
 class DistributedEngine(ABC):
     @abstractmethod
