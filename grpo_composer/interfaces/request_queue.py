@@ -32,10 +32,9 @@ Implemented by:
 Used for asynchronous generation and batching optimization.
 """
 
-import torch
-import torch.nn as nn
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List
+from .generator import RolloutRequest
 
 class RequestQueue(ABC):
     @abstractmethod
