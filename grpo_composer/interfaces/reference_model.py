@@ -3,7 +3,7 @@ Reference Model Interface
 
 Abstract base class for reference model implementations.
 
-Defines:
+Defines:    
 -------
 - `ReferenceModel(ABC)`: Interface for computing ref log-probs
 
@@ -31,6 +31,6 @@ from abc import ABC, abstractmethod
 
 class ReferenceModel(ABC):
     @abstractmethod
-    def get_log_probs(self, token_ids : torch.Tensor, attention_mask : torch.Tensor) -> torch.Tensor:
+    def get_log_probs(self, prompts : torch.Tensor) -> torch.Tensor:
         '''Compute reference log-probabilities for probability ratio and KL regularization.'''
         pass
