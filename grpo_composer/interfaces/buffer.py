@@ -42,9 +42,9 @@ class BufferEntry:
     policy_log_probs  : torch.Tensor #(G, T_completion)
     ref_log_probs     : torch.Tensor #(G, T_completion)
     rewards           : torch.Tensor #(G,)
-    completion_lengths: torch.Tensor #(G,)
-    mean_accuracy     : float   #(μ_q)
-    metadata          : dict
+    # completion_lengths: torch.Tensor #(G,)
+    # mean_accuracy     : float   #(μ_q)
+    # metadata          : dict
 
 
 class Buffer(ABC):
