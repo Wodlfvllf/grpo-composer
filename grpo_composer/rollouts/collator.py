@@ -60,7 +60,7 @@ from typing import List
 
 
 class RolloutCollator:
-    def __init__(self, max_completion_length: int = 512, pad_value: float = 0.0):
+    def __init__(self, max_completion_length: int = 512, pad_value: float = -100.0):
         self.max_completion_length = max_completion_length
         self.pad_value = pad_value
 
