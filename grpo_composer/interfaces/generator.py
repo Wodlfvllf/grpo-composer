@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 @dataclass
 class RolloutRequest:
     prompt : torch.Tensor
+    attention_mask : torch.Tensor   
     params : dict = field(default_factory = dict)
 
 @dataclass
