@@ -1,109 +1,189 @@
-"""
-Prompt Preprocessing and Formatting
+import logging
+from typing import Optional, List, Dict
+from dataclasses import dataclass
+from functools import lru_cache
 
-Handles prompt templating, formatting, and preprocessing before generation.
+from transformers import AutoTokenizer
 
-Purpose:
--------
-Convert raw dataset entries into properly formatted prompts that can be
-sent to the language model for completion generation.
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-Role in Training Pipeline:
--------------------------
-**After Dataset Loading**: Raw prompts → Formatted prompts
-**Before Generation**: Apply templates, add special tokens, format CoT
 
-Key Responsibilities:
---------------------
-1. Apply prompt templates (e.g., instruction format, few-shot)
-2. Handle chain-of-thought (CoT) prompting
-3. Add special tokens and formatting
-4. Support multiple prompt formats (Llama, Mistral, custom)
-5. Validate prompt lengths
+# ═══════════════════════════════════════════════════════════
+# Template Registry
+# ═══════════════════════════════════════════════════════════
 
-Common Prompt Formats:
----------------------
-1. **Instruction Format** (Alpaca, Llama-2-chat):
-```
-### Instruction:
-{prompt}
+TEMPLATES = {
+    "alpaca": {
+        "with_system": (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### System:\n{system}\n\n"
+            "### Instruction:\n{prompt}\n\n"
+            "### Response:\n"
+        ),
+        "without_system": (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{prompt}\n\n"
+            "### Response:\n"
+        ),
+    },
 
-### Response:
-```
+    "chatml": {
+        "with_system": (
+            "<|im_start|>system\n{system}<|im_end|>\n"
+            "<|im_start|>user\n{prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        ),
+        "without_system": (
+            "<|im_start|>user\n{prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        ),
+    },
 
-2. **ChatML Format** (GPT, Mistral):
-```
-<|im_start|>user
-{prompt}<|im_end|>
-<|im_start|>assistant
-```
+    "llama2": {
+        "with_system": (
+            "<s>[INST] <<SYS>>\n{system}\n<</SYS>>\n\n"
+            "{prompt} [/INST]"
+        ),
+        "without_system": "<s>[INST] {prompt} [/INST]",
+    },
 
-3. **Few-Shot Format**:
-```
-Q: What is 1+1?
-A: 2
+    "llama3": {
+        "with_system": (
+            "<|begin_of_text|>"
+            "<|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>"
+            "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        ),
+        "without_system": (
+            "<|begin_of_text|>"
+            "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        ),
+    },
+}
 
-Q: What is 2+2?
-A: 4
 
-Q: {prompt}
-A:
-```
+# ═══════════════════════════════════════════════════════════
+# Prompt Formatter
+# ═══════════════════════════════════════════════════════════
 
-Functions to Implement:
-----------------------
-1. **format_prompt()**
-   - Apply template to raw prompt
-   - Return formatted string
+@dataclass
+class PromptFormatter:
+    template_name: str
+    tokenizer = None
+    max_tokens: Optional[int] = None
 
-2. **add_few_shot_examples()**
-   - Prepend few-shot examples
-   - Handle context length limits
+    def __post_init__(self):
+        if self.template_name not in TEMPLATES:
+            raise ValueError(f"Unknown template: {self.template_name}")
 
-3. **validate_prompt_length()**
-   - Check token count
-   - Truncate if necessary
+        self.template = TEMPLATES[self.template_name]
 
-Example Usage:
--------------
-```python
-# Load raw prompt
-raw_prompt = "What is the sum of 5 and 7?"
+    def format_prompt(
+        self,
+        prompt: str,
+        system_message: Optional[str] = None
+    ) -> str:
 
-# Format with Alpaca template
-formatted = format_prompt(
-    prompt=raw_prompt,
-    template="alpaca",
-    system_message="You are a helpful math tutor."
-)
+        if system_message:
+            template = self.template["with_system"]
+            return template.format(system=system_message, prompt=prompt)
+        else:
+            template = self.template["without_system"]
+            return template.format(prompt=prompt)
 
-# Add few-shot examples
-with_examples = add_few_shot_examples(
-    formatted,
-    examples=[
-        {"Q": "What is 2+2?", "A": "4"},
-        {"Q": "What is 10-3?", "A": "7"}
-    ]
-)
+    def batch_format(self, batch: List[Dict[str, str]]):
+        outputs = []
 
-# Result:
-# Q: What is 2+2?
-# A: 4
-# 
-# Q: What is 10-3?
-# A: 7
-#
-# ### Instruction:
-# What is the sum of 5 and 7?
-# 
-# ### Response:
-```
+        for example in batch:
+            formatted_prompt = self.format_prompt(example["prompt"])
 
-Implementation Notes:
---------------------
-- Use Jinja2 templates for complex formatting
-- Support custom templates via YAML config
-- Integrate with HuggingFace tokenizer.apply_chat_template()
-- Cache formatted prompts to avoid recomputation
-- Log warning if prompt exceeds max_tokens
-"""
+            # Proper CLM style: prompt + target
+            full_text = formatted_prompt + example["target"]
+
+            outputs.append(full_text)
+
+        return outputs
+
+    # -------------------------------------------------------
+    # 2. Add Few Shot Examples
+    # -------------------------------------------------------
+    def add_few_shot_examples(
+        self,
+        formatted_prompt: str,
+        examples: List[Dict[str, str]],
+    ) -> str:
+
+        few_shot_block = ""
+
+        for example in examples:
+            q = example.get("Q")
+            a = example.get("A")
+
+            few_shot_block += f"Q: {q}\nA: {a}\n\n"
+
+        combined = few_shot_block + formatted_prompt
+
+        return combined
+
+    # -------------------------------------------------------
+    # 3. Validate Prompt Length
+    # -------------------------------------------------------
+    def validate_prompt_length(self, prompt: str) -> str:
+
+        if not self.tokenizer or not self.max_tokens:
+            return prompt
+
+        tokens = self.tokenizer.encode(prompt)
+
+        if len(tokens) <= self.max_tokens:
+            return prompt
+
+        logger.warning(
+            f"Prompt too long ({len(tokens)} tokens). "
+            f"Truncating to {self.max_tokens}."
+        )
+
+        truncated_tokens = tokens[: self.max_tokens]
+        truncated_prompt = self.tokenizer.decode(
+            truncated_tokens,
+            skip_special_tokens=False
+        )
+
+        return truncated_prompt
+
+
+# ═══════════════════════════════════════════════════════════
+# Example Usage
+# ═══════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+
+    formatter = PromptFormatter(
+        template_name="alpaca",
+        tokenizer_name="meta-llama/Llama-2-7b-hf",  # change if needed
+        max_tokens=512
+    )
+
+    raw_prompt = "What is the sum of 5 and 7?"
+
+    formatted = formatter.format_prompt(
+        prompt=raw_prompt,
+        system_message="You are a helpful math tutor."
+    )
+
+    with_examples = formatter.add_few_shot_examples(
+        formatted_prompt=formatted,
+        examples=[
+            {"Q": "What is 2+2?", "A": "4"},
+            {"Q": "What is 10-3?", "A": "7"},
+        ]
+    )
+
+    final_prompt = formatter.validate_prompt_length(with_examples)
+
+    print("========== FINAL PROMPT ==========")
+    print(final_prompt)
