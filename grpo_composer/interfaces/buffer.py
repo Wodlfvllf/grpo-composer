@@ -38,7 +38,6 @@ from dataclasses import dataclass, field
 
 @dataclass
 class BufferEntry:
-    prompt_tokens     : torch.Tensor #(T_prompt,)
     completions       : torch.Tensor #(G, T_completion)
     policy_log_probs  : torch.Tensor #(G, T_completion)
     ref_log_probs     : torch.Tensor #(G, T_completion)
