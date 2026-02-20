@@ -2,7 +2,7 @@
 from .buffer import Buffer, BufferEntry
 from .config import Config
 from .distributed_engine import DistributedEngine
-from .generator import Generator
+from .inference_engine import InferenceEngine, RolloutRequest, RolloutResult
 from .ref_updater import RefModelUpdater
 from .reference_model import ReferenceModel
 from .request_queue import RequestQueue
@@ -15,7 +15,9 @@ __all__ = [
     "BufferEntry",
     "Config",
     "DistributedEngine",
-    "Generator",
+    "InferenceEngine",
+    "RolloutRequest",
+    "RolloutResult",
     "RefModelUpdater",
     "ReferenceModel",
     "RequestQueue",
