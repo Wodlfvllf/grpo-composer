@@ -109,7 +109,7 @@ CONSTRUCTOR ARGS:
 import torch
 import torch.nn as nn
 from typing import List
-from ..interfaces import Generator, RewardEvaluator, ReferenceModel, BufferEntry
+from ..interfaces import Generator, RewardEvaluator, ReferenceModel, BufferEntry, RolloutResult, RolloutRequest
 from .collator import RolloutCollator
 def expand_for_group(input_ids, attention_mask, G):
     """(B, T) → (B*G, T) by repeating each prompt G times."""
@@ -155,25 +155,28 @@ class Worker:
         # 1. Expand prompts: (B, T) → (B*G, T)
         expanded_ids, expanded_mask = expand_for_group(input_ids, attention_mask, G)
 
+        request = RolloutRequest(
+            input_ids = expanded_ids,
+            attention_mask = expanded_mask
+        )
         # 2. Generate all completions at once
         rollout = self.generator.generate(
-            input_ids=expanded_ids,
-            attention_mask=expanded_mask,
+            request = request
         )
-        # rollout["completions"]: (B*G, L)
-        # rollout["log_probs"]:   (B*G, L)
+        # rollout.completions: (B*G, L)
+        # rollout.log_probs:   (B*G, L)
 
         # 3. Reshape to (B, G, L)
-        L = rollout["completions"].size(-1)
-        completions = rollout["completions"].view(B, G, L)
-        policy_log_probs = rollout["log_probs"].view(B, G, L)
+        L = rollout.completions.size(-1)
+        completions = rollout.completions.view(B, G, L)
+        policy_log_probs = rollout.log_probs.view(B, G, L)
 
         # 4. Rewards: (B, G)
         rewards = self.reward_evaluator(input_ids, completions)
 
         # 5. Reference log-probs: (B*G, L) → (B, G, L)
         ref_log_probs = self.reference_model.get_log_probs(
-            rollout["completions"]    # (B*G, L) — ref model scores completions
+            rollout.completions    # (B*G, L) — ref model scores completions
         ).view(B, G, L)
 
         # 6. Pack one BufferEntry per prompt
