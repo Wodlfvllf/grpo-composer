@@ -96,6 +96,9 @@ CONFIG FIELDS THAT CONTROL THIS:
 
 import torch
 import torch.nn as nn
+from ..datasets import GRPODataloader
+from .worker import Worker
+from ..interfaces import Generator, RewardEvaluator, ReferenceModel, BufferEntry
 
 class Coordinator(nn.Module):
     def __init__(
@@ -106,10 +109,32 @@ class Coordinator(nn.Module):
         Config should contains - 
         1. Rollout Strategy or oversample strategy
         2. And what its parameters should be. Let us figure out later that we need to pass in the params as arguments of in config itself.
+        Few params
+            tokenizer,
+            template_name: str,
+            name: Optional[str] = None,
+            data_format: Optional[str] = None,
+            data_files: Optional[List[str]] = None,
+            prompt: Optional[str] = None,
+            target: Optional[str] = None,
         """
         self.config = config
 
-    def step(self):
-        if config.rollout_strategy == "simple":
+        self.dataloader_generation = GRPODataloader(
+            tokenizer = config["tokenizer"],
+            template_name = config["template_name"],
+            name = config["name"],
+            data_format = config["data_format"],
+            data_files = config["data_files"],
+            prompt = config["prompt"],
+            target = config["target"]
+        )
+        self.train_dataloaders, self.test_dataloaders = self.dataloader_generation.get_dataloaders(config['batch_size'])
+        self.generator = Generator(
             
+        )
+
+    def step(self):
+        pass
+
 

@@ -109,7 +109,14 @@ CONSTRUCTOR ARGS:
 import torch
 import torch.nn as nn
 from typing import List
-from ..interfaces import Generator, RewardEvaluator, ReferenceModel, BufferEntry, RolloutResult, RolloutRequest
+from ..interfaces import (
+    InferenceEngine, 
+    RewardEvaluator, 
+    ReferenceModel, 
+    BufferEntry, 
+    RolloutResult, 
+    RolloutRequest
+)
 from .collator import RolloutCollator
 def expand_for_group(input_ids, attention_mask, G):
     """(B, T) → (B*G, T) by repeating each prompt G times."""
@@ -119,9 +126,10 @@ def expand_for_group(input_ids, attention_mask, G):
 class Worker:
     def __init__(
         self,
-        generator: Generator,
+        policy_generator: InferenceEngine,
+        policy_evaluator : 
         reward_evaluator: RewardEvaluator,
-        reference_model: ReferenceModel,
+        reference_evaluator: InferenceEngine,
         group_size: int = 8,
         max_completion_length: int = 512,
         pad_value: float = -100.0,
