@@ -9,6 +9,7 @@ from .request_queue import RequestQueue
 from .reward_model import RewardEvaluator
 from .sampler import BatchSampler, TrainingBatch
 from .trainer import Trainer
+from .training_engine import TrainingEngine
 
 __all__ = [
     "Buffer",
@@ -24,5 +25,6 @@ __all__ = [
     "RewardEvaluator",
     "BatchSampler",
     "TrainingBatch",
-    "Trainer"
+    "Trainer",
+    "TrainingEngine"
 ]
