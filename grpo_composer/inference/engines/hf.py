@@ -3,61 +3,112 @@ HuggingFace Generator
 
 Uses HuggingFace Transformers `.generate()` for text completion.
 
-When to Use:
------------
-- Small models (≤7B) on single GPU
-- Prototyping and debugging
-- When vLLM not available
-- Flexible generation parameters needed
+"""
 
-Pros:
-----
-+ Simple, well-documented
-+ Supports all HF models
-+ Easy to debug
-+ Flexible sampling options
+from ...interfaces import InferenceEngine, RolloutRequest, RolloutResult
+from typing import List
+import torch
+import torch.nn as nn
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-Cons:
-----
-- Slower than vLLM (no continuous batching)
-- Inefficient for large batches
-- Memory inefficient for long sequences
 
-Implementation:
---------------
-```python
-class HFGenerator(Generator):
+class HFGenerator(InferenceEngine):
     def __init__(
         self,
         model_name_or_path: str,
         device: str = "cuda",
-        dtype: torch.dtype = torch.float16
+        dtype=torch.float32,
+        max_new_tokens: int = 512,
+        temperature: float = 1.0,
+        top_p: float = 0.9,
+        top_k: int = 50,
+        repetition_penalty: float = 1.0,
     ):
-        '''Load HF model for generation.'''
+        self.device = device
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.repetition_penalty = repetition_penalty
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=dtype,
-            device_map=device
-        )
+        ).to(device)
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    
-    def generate(self, requests: List[RolloutRequest]) -> List[RolloutResult]:
-        '''Generate using .generate() and extract log-probs from scores.'''
-        pass
-```
 
-Key Methods:
------------
-- `_extract_log_probs()`: Compute log-probs from generation scores
-- `_batch_requests()`: Group requests for batching
-- `_postprocess()`: Convert HF outputs to RolloutResult
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-Performance:
------------
-Typical throughput (7B model, A100):
-- Batch size 1: ~20 tokens/sec
-- Batch size 8: ~120 tokens/sec
-- Batch size 32: ~200 tokens/sec
+        self.model.eval()
 
-Compare with vLLM: ~800 tokens/sec with continuous batching
-"""
+    def generate(self, request: RolloutRequest) -> RolloutResult:
+
+        input_ids = request.input_ids.to(self.device)
+        attention_mask = request.attention_mask.to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=True,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
+                repetition_penalty=self.repetition_penalty,
+                return_dict_in_generate=True,
+                output_scores=True,
+            )
+
+        sequences = outputs.sequences  # (B*G, T_total)
+        scores = outputs.scores        # list length = new_tokens
+
+        # -------------------------------------------------
+        # Compute token log-probs
+        # -------------------------------------------------
+
+        logits = torch.stack(scores, dim=0)  # (new_tokens, B*G, vocab)
+        log_probs = torch.log_softmax(logits, dim=-1)
+
+        # Move batch first
+        log_probs = log_probs.permute(1, 0, 2)  # (B*G, new_tokens, vocab)
+
+        T_prompt = input_ids.shape[1]
+
+        generated_tokens = sequences[:, T_prompt:]  # (B*G, new_tokens)
+
+        token_log_probs = log_probs.gather(
+            dim=-1,
+            index=generated_tokens.unsqueeze(-1),
+        ).squeeze(-1)  # (B*G, new_tokens)
+
+        return RolloutResult(
+            completions=generated_tokens,   # (B*G, L)
+            log_probs=token_log_probs,      # (B*G, L)
+        )
+
+    def get_log_probs(self, input_ids, attention_mask) -> torch.Tensor:
+        """Single forward pass → log-probs of existing tokens."""
+
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+        logits = outputs.logits  # (B, T, vocab)
+        log_probs = torch.log_softmax(logits, dim=-1)
+
+        # Gather log-probs at each position for the *next* token
+        # Shift: log_probs[:, :-1] aligned with input_ids[:, 1:]
+        shifted_log_probs = log_probs[:, :-1, :]
+        shifted_ids = input_ids[:, 1:]
+
+        token_log_probs = shifted_log_probs.gather(
+            dim=-1,
+            index=shifted_ids.unsqueeze(-1),
+        ).squeeze(-1)  # (B, T-1)
+
+        return token_log_probs
