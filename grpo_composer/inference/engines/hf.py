@@ -2,46 +2,36 @@
 HuggingFace Generator
 
 Uses HuggingFace Transformers `.generate()` for text completion.
-
+Receives a pre-loaded nn.Module from models/pretrained.py.
 """
 
 from ...interfaces import InferenceEngine, RolloutRequest, RolloutResult
 from typing import List
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
 
 class HFGenerator(InferenceEngine):
     def __init__(
         self,
-        model_name_or_path: str,
+        model: nn.Module,
+        tokenizer: AutoTokenizer,
         device: str = "cuda",
-        dtype=torch.float32,
         max_new_tokens: int = 512,
         temperature: float = 1.0,
         top_p: float = 0.9,
         top_k: int = 50,
         repetition_penalty: float = 1.0,
     ):
+        self.model = model
+        self.tokenizer = tokenizer
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.repetition_penalty = repetition_penalty
-
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
-            torch_dtype=dtype,
-        ).to(device)
-
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        self.model.eval()
 
     def generate(self, request: RolloutRequest) -> RolloutResult:
 
@@ -85,8 +75,8 @@ class HFGenerator(InferenceEngine):
         ).squeeze(-1)  # (B*G, new_tokens)
 
         return RolloutResult(
-            completions=generated_tokens,   # (B*G, L)
-            log_probs=token_log_probs,      # (B*G, L)
+            completions=generated_tokens,   # (B*G, new_tokens)
+            log_probs=token_log_probs,      # (B*G, new_tokens)
         )
 
     def get_log_probs(self, input_ids, attention_mask) -> torch.Tensor:
@@ -101,7 +91,6 @@ class HFGenerator(InferenceEngine):
         logits = outputs.logits  # (B, T, vocab)
         log_probs = torch.log_softmax(logits, dim=-1)
 
-        # Gather log-probs at each position for the *next* token
         # Shift: log_probs[:, :-1] aligned with input_ids[:, 1:]
         shifted_log_probs = log_probs[:, :-1, :]
         shifted_ids = input_ids[:, 1:]
