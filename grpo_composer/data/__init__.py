@@ -28,3 +28,9 @@ This module handles **dataset-level** operations (loading prompts).
 The `data/sampling/` submodule handles **buffer-level** operations 
 (sampling completed rollouts from buffer for training).
 """
+
+from .dataloader import GRPODataloader
+
+__all__ = [
+    "GRPODataloader"
+]
