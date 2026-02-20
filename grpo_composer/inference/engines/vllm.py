@@ -1,84 +1,162 @@
 """
-vLLM Generator
+vLLM Inference Engine
 
-Uses vLLM for high-throughput text generation with continuous batching.
+Uses vLLM's LLM class for fast batched generation.
+"""
 
-When to Use:
------------
-- Production deployments
-- Large models (13B+)
-- High throughput requirements
-- Multi-GPU inference
+from ...interfaces import InferenceEngine, RolloutRequest, RolloutResult
+import torch
+import torch.nn as nn
+from typing import List, Dict, Any, Optional
+from vllm import LLM, SamplingParams
 
-Pros:
-----
-+ 10-30x faster than HF for large batches
-+ Continuous batching (no padding waste)
-+ PagedAttention (memory efficient)
-+ Tensor parallelism built-in
-+ Prefix caching support
 
-Cons:
-----
-- Less flexible than HF
-- Requires separate installation
-- Limited model support (popular models only)
-- More complex setup
-
-Implementation:
---------------
-```python
-class VLLMGenerator(Generator):
+class VLLMInferenceEngine(InferenceEngine):
     def __init__(
         self,
         model_name_or_path: str,
         tensor_parallel_size: int = 1,
-        max_num_seqs: int = 256,
-        gpu_memory_utilization: float = 0.9
+        dtype: str = "float16",
+        gpu_memory_utilization: float = 0.9,
+        sampling_params: Optional[Dict[str, Any]] = None,
+        max_model_len: Optional[int] = None,
     ):
-        '''Initialize vLLM engine.'''
-        from vllm import LLM, SamplingParams
-        
+        """
+        Initialize vLLM engine.
+
+        sampling_params: dict with keys matching vLLM SamplingParams, e.g.:
+            {"temperature": 1.0, "top_p": 1.0, "top_k": -1,
+             "max_tokens": 512, "logprobs": 1, "stop": None}
+        """
+
+        self.model_name_or_path = model_name_or_path
+        self.tensor_parallel_size = tensor_parallel_size
+        self.dtype = dtype
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.max_model_len = max_model_len
+        self.sampling_params = sampling_params or {}
+
+        self._init_engine()
+
+    def _init_engine(self):
+        """Internal method to initialise LLM Engine."""
+
         self.llm = LLM(
-            model=model_name_or_path,
-            tensor_parallel_size=tensor_parallel_size,
-            max_num_seqs=max_num_seqs,
-            gpu_memory_utilization=gpu_memory_utilization
+            model=self.model_name_or_path,
+            tensor_parallel_size=self.tensor_parallel_size,
+            dtype=self.dtype,
+            gpu_memory_utilization=self.gpu_memory_utilization,
+            max_model_len=self.max_model_len,
         )
-    
-    def generate(self, requests: List[RolloutRequest]) -> List[RolloutResult]:
-        '''Use vLLM batched generation with log-probs.'''
-        pass
-```
 
-Key Features:
-------------
-- **Continuous Batching**: Requests dynamically added/removed
-- **PagedAttention**: KV cache in paged blocks
-- **Prefix Caching**: Reuse common prompt prefixes
-- **Tensor Parallelism**: Split model across GPUs
+    def generate(self, request: RolloutRequest) -> RolloutResult:
+        """
+        Generate completions from token IDs.
 
-Performance:
------------
-Typical throughput (13B model, 4xA100):
-- vLLM: ~800-1200 tokens/sec
-- HF: ~200-300 tokens/sec
-- **4x speedup** with continuous batching
+        Args:
+            request: RolloutRequest with input_ids (B*G, T) and attention_mask (B*G, T).
 
-Configuration Tips:
-------------------
-```yaml
-vllm:
-  tensor_parallel_size: 4       # GPUs per model
-  max_num_seqs: 256             # Max concurrent sequences
-  gpu_memory_utilization: 0.9   # GPU memory fraction
-  enable_prefix_caching: true   # Cache prompt prefixes
-```
+        Returns:
+            RolloutResult with completions (B*G, L) and log_probs (B*G, L).
+        """
 
-Installation:
-------------
-```bash
-pip install vllm
-# Requires CUDA 11.8+ and compatible GPU (A100, H100)
-```
-"""
+        sampling_params = SamplingParams(**self.sampling_params)
+
+        # Build list of TokensPrompt dicts — one per row in the batch
+        prompts = [
+            {"prompt_token_ids": row.tolist()}
+            for row in request.input_ids
+        ]
+
+        outputs = self.llm.generate(prompts, sampling_params=sampling_params)
+
+        all_token_ids = []
+        all_log_probs = []
+
+        for output in outputs:
+            out = output.outputs[0]  # single sequence per prompt (n=1)
+            all_token_ids.append(list(out.token_ids))
+
+            if out.logprobs is not None:
+                token_logprobs = [
+                    list(tlp.values())[0].logprob
+                    for tlp in out.logprobs
+                ]
+                all_log_probs.append(token_logprobs)
+
+        # Pad to equal length
+        max_len = max(len(c) for c in all_token_ids)
+        padded_ids = [c + [0] * (max_len - len(c)) for c in all_token_ids]
+
+        if all_log_probs:
+            padded_lp = [lp + [0.0] * (max_len - len(lp)) for lp in all_log_probs]
+            log_probs_tensor = torch.tensor(padded_lp)
+        else:
+            log_probs_tensor = torch.zeros(len(padded_ids), max_len)
+
+        return RolloutResult(
+            completions=torch.tensor(padded_ids),   # (B*G, L)
+            log_probs=log_probs_tensor,              # (B*G, L)
+        )
+
+    def get_log_probs(self, input_ids, attention_mask) -> torch.Tensor:
+        """
+        Score existing tokens via vLLM prompt_logprobs.
+
+        Returns: (B, T-1) log-probs for each token given its prefix.
+        """
+
+        sampling_params = SamplingParams(
+            max_tokens=1,
+            prompt_logprobs=1,
+            temperature=0,
+        )
+
+        prompts = [
+            {"prompt_token_ids": row.tolist()}
+            for row in input_ids
+        ]
+
+        outputs = self.llm.generate(prompts, sampling_params=sampling_params)
+
+        all_log_probs = []
+        for i, output in enumerate(outputs):
+            tokens = input_ids[i].tolist()
+            prompt_lps = output.prompt_logprobs  # list of dicts, length T
+
+            # First token has no log-prob (it's the BOS/start)
+            token_log_probs = []
+            for t in range(1, len(prompt_lps)):
+                lp_dict = prompt_lps[t]
+                token_id = tokens[t]
+                if lp_dict is not None and token_id in lp_dict:
+                    token_log_probs.append(lp_dict[token_id].logprob)
+                else:
+                    token_log_probs.append(0.0)
+            all_log_probs.append(token_log_probs)
+
+        # Pad to equal length
+        max_len = max(len(lp) for lp in all_log_probs)
+        padded = [lp + [0.0] * (max_len - len(lp)) for lp in all_log_probs]
+
+        return torch.tensor(padded)  # (B, T-1)
+
+    def reload_model(self, new_model_path: str):
+        """
+        Reload a new model checkpoint.
+        Used after policy update stage in RL.
+        """
+
+        print(f"Reloading model from: {new_model_path}")
+
+        # Free old engine
+        del self.llm
+        torch.cuda.empty_cache()
+
+        # Update path
+        self.model_name_or_path = new_model_path
+
+        # Reinitialize engine
+        self._init_engine()
+
+        print("Model reloaded successfully.")
