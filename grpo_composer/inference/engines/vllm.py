@@ -2,52 +2,32 @@
 vLLM Inference Engine
 
 Uses vLLM's LLM class for fast batched generation.
+Receives a pre-loaded vLLM LLM instance from models/pretrained.py.
 """
 
 from ...interfaces import InferenceEngine, RolloutRequest, RolloutResult
 import torch
-import torch.nn as nn
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from vllm import LLM, SamplingParams
 
 
 class VLLMInferenceEngine(InferenceEngine):
     def __init__(
         self,
-        model_name_or_path: str,
-        tensor_parallel_size: int = 1,
-        dtype: str = "float16",
-        gpu_memory_utilization: float = 0.9,
+        llm: LLM,
         sampling_params: Optional[Dict[str, Any]] = None,
-        max_model_len: Optional[int] = None,
     ):
         """
         Initialize vLLM engine.
 
-        sampling_params: dict with keys matching vLLM SamplingParams, e.g.:
-            {"temperature": 1.0, "top_p": 1.0, "top_k": -1,
-             "max_tokens": 512, "logprobs": 1, "stop": None}
+        Args:
+            llm: Pre-loaded vLLM LLM instance (from models.load_vllm).
+            sampling_params: dict with keys matching vLLM SamplingParams, e.g.:
+                {"temperature": 1.0, "top_p": 1.0, "top_k": -1,
+                 "max_tokens": 512, "logprobs": 1, "stop": None}
         """
-
-        self.model_name_or_path = model_name_or_path
-        self.tensor_parallel_size = tensor_parallel_size
-        self.dtype = dtype
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_model_len = max_model_len
+        self.llm = llm
         self.sampling_params = sampling_params or {}
-
-        self._init_engine()
-
-    def _init_engine(self):
-        """Internal method to initialise LLM Engine."""
-
-        self.llm = LLM(
-            model=self.model_name_or_path,
-            tensor_parallel_size=self.tensor_parallel_size,
-            dtype=self.dtype,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            max_model_len=self.max_model_len,
-        )
 
     def generate(self, request: RolloutRequest) -> RolloutResult:
         """
@@ -146,17 +126,13 @@ class VLLMInferenceEngine(InferenceEngine):
         Reload a new model checkpoint.
         Used after policy update stage in RL.
         """
+        from ...models import load_vllm
 
         print(f"Reloading model from: {new_model_path}")
 
-        # Free old engine
         del self.llm
         torch.cuda.empty_cache()
 
-        # Update path
-        self.model_name_or_path = new_model_path
-
-        # Reinitialize engine
-        self._init_engine()
+        self.llm = load_vllm(new_model_path)
 
         print("Model reloaded successfully.")
