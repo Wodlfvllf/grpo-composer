@@ -1,0 +1,27 @@
+# ──────────────────────────────────────────────────────
+# DARO — Difficulty-Aware Reward Optimization
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Difficulty-aware advantage: logistic weight based on solve rate
+#   2. Difficulty-weighted aggregation: learnable per-bin weights
+#   3. Log-weight regularizer: -Σ ln(w_μ) to prevent weight collapse
+#   4. Symmetric clipping (standard)
+
+algorithm:
+  adv_estimator: "difficulty_aware_grpo"   # GRPO-LEAD advantage (from grpo_composer)
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"            # DARO's difficulty weighting is in the advantage
+    regularizer: "none"              # Log-weight reg is built into difficulty_weighted agg
+    reg_coef: 0.0
+    # ── DARO parameters ──
+    difficulty_A: 0.2                 # Logistic lower bound
+    difficulty_B: 1.0                 # Logistic upper bound
+    difficulty_k: 10.0                # Logistic steepness
+    difficulty_rho_0: 0.5             # Logistic midpoint (solve rate)
