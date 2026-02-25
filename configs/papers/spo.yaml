@@ -1,0 +1,43 @@
+# ──────────────────────────────────────────────────────
+# SPO — Spectral Policy Optimization
+# Paper: "SPO: Coloring your Incorrect Reasoning in GRPO"
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. REWARD: RLAIF reward with Reasoning Trajectory Score (RTS)
+#      r_AIF(y) = 1 if correct
+#               = 1/(1 + exp(β(RTS(y) - γ))) if incorrect
+#      → core/rewards/rts_based.py
+#
+# Problem solved:
+#   When all samples in a group are wrong, GRPO gives A_i = 0
+#   (no gradient from mistakes). SPO gives different rewards to
+#   wrong answers based on reasoning quality, enabling learning
+#   from partially correct reasoning in wrong answers.
+#
+# Architecture:
+#   RTS computation requires an external model (e.g., GPT-4) to
+#   identify the first mistake in reasoning. The RTSRewardCalculator
+#   takes pre-computed RTS scores as input.
+#
+# Components:
+#   Reward:        RTSRewardCalculator (SPO specific!)
+#   Advantage:     Standard GRPO (base)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   Token mean (base GRPO)
+#   KL:            Optional
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config (all standard base GRPO) ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01
+    # ── SPO reward params ──
+    rts_beta: 5.0                       # Sigmoid scale intensity
+    rts_gamma: 0.5                      # Sigmoid threshold

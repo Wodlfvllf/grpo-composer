@@ -1,0 +1,37 @@
+# ──────────────────────────────────────────────────────
+# λ-GRPO — Learnable Token Preferences
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Replaces uniform 1/G weighting with learnable f_λ(o_i)
+#   2. f_λ(o_i) = G × softmax(h_i^λ) where h_i = 1 + r·z_i
+#   3. λ ∈ ℝ is a LEARNABLE parameter (SGD, lr=0.1)
+#   4. Unifies GRPO (f=μ/|o|), DAPO (f=1), Dr.GRPO (f=μ) as special cases
+#
+# Components:
+#   Advantage:     Standard GRPO (base)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   GroupLearnableAggregation (λ-GRPO specific!)
+#   KL:            Optional (paper doesn't specify)
+#
+# Note: λ is a nn.Parameter in GroupLearnableAggregation.
+#   The training loop's optimizer must include it:
+#     lambda_opt = SGD([agg.lambda_], lr=0.1, weight_decay=0.0)
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"
+    agg_mode: "group_learnable"         # λ-GRPO learnable weighting
+    regularizer: "kl"
+    reg_coef: 0.01
+    # ── λ-GRPO aggregation params (paper defaults) ──
+    lambda_init: 0.0                    # λ init — 0 = neutral (learns from data)
+    lambda_r: 0.1111                    # r = 1/9 — aggressive scaling
+    lambda_learnable: true              # Enable gradient flow through λ
+    lambda_lr: 0.1                      # SGD learning rate for λ

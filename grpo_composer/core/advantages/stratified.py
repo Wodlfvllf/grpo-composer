@@ -1,56 +1,87 @@
 """
 Stratified-GRPO: Per-Stratum Advantage Normalization (SAN)
 
-Paper: Stratified-GRPO
+Paper: "Stratified GRPO: Handling Structural Heterogeneity in RL of LLM Search Agents"
 
 Components Changed (from base GRPO):
 - Partitions trajectories into strata by structure (e.g., search count)
 - Normalizes advantages WITHIN each stratum, not globally
 
 Mathematical Form:
-    Problem: Global normalization has cross-stratum bias when trajectories 
-             differ structurally
+    Global advantage (standard GRPO):
+        A^{GN}(τ_i) = (R_i - R̄_global) / (σ_global + ε)
 
-    Partition: Group trajectories into strata by structure
-
-    Per-Stratum Normalization (SAN):
-        A^{SAN}(τ_i) = (R(τ_i) - μ̃_k) / (σ̃_k + ε)
-        
-        Where μ̃_k, σ̃_k are computed within stratum k only
+    Stratified advantage (SAN):
+        A^{SAN}(τ_i) = (R_i - μ̃_k) / (σ̃_k + ε)
+        where μ̃_k, σ̃_k computed within stratum k only
 
     Blended (for finite-sample stability):
-        A^{blend} = α * A^{SAN} + (1 - α) * A^{GN}
+        A^{blend} = α · A^{SAN} + (1 - α) · A^{GN}
 
-Benefit:
-    Eliminates between-stratum variance, zero conditional bias per stratum
+    Advantage decomposition:
+        A^{GN} = A^{SAN} + (R̄_k - R̄_global)  [cross-stratum bias]
+
+Benefits:
+    - Eliminates between-stratum variance
+    - Zero conditional mean within each stratum
+    - Unit conditional variance within each stratum
+    - Invariant to positive affine reward transforms
 """
 
+import torch
+from .base import AdvantageFunction
+
+
 class StratifiedAdvantageFunction(AdvantageFunction):
-    def __init__(self, alpha: float = 0.5, epsilon: float = 1e-8):
+    """
+    Stratified-GRPO: Stratified Advantage Normalization (SAN).
+
+    Args:
+        alpha: Blending coefficient (1 = pure SAN, 0 = pure GN). Default 1.0.
+        epsilon: Numerical stability constant. Default 1e-8.
+    """
+
+    def __init__(self, alpha: float = 1.0, epsilon: float = 1e-8):
         super().__init__()
         self.alpha = alpha
         self.epsilon = epsilon
 
-    def compute_advantages(self, rewards: torch.Tensor, strata: torch.Tensor) -> torch.Tensor:
+    def compute_advantages(
+        self,
+        rewards: torch.Tensor,
+        strata: torch.Tensor,
+    ) -> torch.Tensor:
         """
+        Compute blended stratified advantages.
+
         Args:
-            rewards: (B, G) rewards
-            strata: (B, G) strata
+            rewards: (B, G) rewards per trajectory
+            strata: (B, G) integer stratum IDs per trajectory
+
         Returns:
-            advantages: (B, G) stratified advantages
+            advantages: (B, G) blended SAN + GN advantages
         """
         B, G = rewards.shape
-        advantage = torch.zeros_like(rewards)
 
-        for idx in range(B):
-            reward = rewards[idx]
-            stratum = strata[idx]
-            
-            for strata in set(stratum):
-                mask = (stratum == strata)
-                mean = reward[mask].mean()
-                std = reward[mask].std() + self.epsilon
-                advantage[idx][mask] = (reward[mask] - mean) / std
-        
-        base_advantage = (rewards - rewards.mean(dim=-1, keepdim=True)) / (rewards.std(dim=-1, keepdim=True) + self.epsilon)
-        return self.alpha * advantage + (1 - self.alpha) * base_advantage
+        # Global normalization (GN) — standard GRPO
+        global_mean = rewards.mean(dim=-1, keepdim=True)
+        global_std = rewards.std(dim=-1, keepdim=True) + self.epsilon
+        a_gn = (rewards - global_mean) / global_std
+
+        # Stratified normalization (SAN) — per-stratum
+        a_san = torch.zeros_like(rewards)
+
+        for b in range(B):
+            r = rewards[b]          # (G,)
+            s = strata[b]           # (G,)
+
+            for s_id in s.unique().tolist():
+                mask = (s == s_id)
+                stratum_rewards = r[mask]
+
+                mu_k = stratum_rewards.mean()
+                sigma_k = stratum_rewards.std() + self.epsilon
+                a_san[b, mask] = (stratum_rewards - mu_k) / sigma_k
+
+        # Blended advantage
+        return self.alpha * a_san + (1.0 - self.alpha) * a_gn

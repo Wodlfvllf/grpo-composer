@@ -18,64 +18,43 @@ Mathematical Form:
 Benefit:
     Better convergence rate O(log|V| / √N) without MN or σ²_{sT} terms.
     Uses upper-only clipping at trajectory level.
+
+Note:
+    When used with trajectory-level clipping upstream, the loss_per_token
+    may actually be uniform per-sequence (broadcast from trajectory ratio).
+    This aggregation simply takes the mean over sequences.
 """
-from ..advantages import *
-from ..clipping import *
 import torch
 from .base import AggregationFunction
+
 
 class TrajectoryLevelAggregation(AggregationFunction):
     def __init__(self):
         super().__init__()
-    
-    def compute_aggregation(
+
+    def aggregate(
         self,
-        rewards: torch.Tensor,          # (B, G)
-        log_probs: torch.Tensor,        # (B, G, T)
-        ref_log_probs: torch.Tensor,    # (B, G, T)
-        mask: torch.Tensor              # (B, G, T) - 1=valid token, 0=padding
+        loss_per_token: torch.Tensor,   # (B, T) — pre-computed surrogate losses
+        mask: torch.Tensor,             # (B, T) — 1=valid token, 0=padding
+        **kwargs,
     ) -> torch.Tensor:
         """
         Shape Flow:
-            Input:  rewards (B, G), log_probs (B, G, T), ref_log_probs (B, G, T), mask (B, G, T)
-            Step 1: advantage (B, G)
-            Step 2: trajectory_ratio (B, G) - product of token ratios = exp(sum of log ratios)
-            Step 3: clipped_ratio (B, G) - upper-only clipping
-            Step 4: surrogate terms (B, G), ratio_min (B, G)
-            Step 5: loss (scalar)
-        
-        Key difference: Operates at TRAJECTORY level, not token level.
+            Input:  loss_per_token (B, T), mask (B, T)
+            Step 1: token_count (B,) — count valid tokens per sequence
+            Step 2: seq_loss (B,) — mean over valid tokens
+            Step 3: loss (scalar) — mean over sequences
+
+        Key difference: When paired with trajectory-level clipping,
+        the ratio is computed at TRAJECTORY level (product of token ratios),
+        so loss_per_token may be uniform per sequence.
         """
-        B, G, T = log_probs.shape
+        # Token mean per sequence
+        # mask.sum(dim=-1): (B, T) → (B,)
+        # (loss_per_token * mask).sum(dim=-1): (B, T) → (B,)
+        token_count = mask.sum(dim=-1)
+        seq_loss = (loss_per_token * mask).sum(dim=-1) / (token_count + 1e-8)
 
-        # 1. Trajectory-level advantage
-        # rewards: (B, G) → advantage: (B, G)
-        advantage = StandardAdvantageFunction().compute_advantages(rewards)
-
-        # 2. Compute TRAJECTORY-level ratio (not token-level!)
-        # log_probs - ref_log_probs: (B, G, T)
-        # Mask and sum over T dimension: (B, G, T) → (B, G)
-        # exp to get trajectory ratio: (B, G)
-        # This computes: Π_t (π_θ / π_old) = exp(Σ_t log(π_θ / π_old))
-        log_ratio = log_probs - ref_log_probs
-        masked_log_ratio = log_ratio * mask
-        trajectory_log_ratio = masked_log_ratio.sum(dim=-1)  # (B, G)
-        trajectory_ratio = torch.exp(trajectory_log_ratio)    # (B, G)
-
-        # 3. Clip trajectory ratio (upper-only clipping per TIC-GRPO)
-        # trajectory_ratio: (B, G) → clipped_ratio: (B, G)
-        clipped_ratio = TrajectoryLevelClippingMechanism().clip(probs_ratio=trajectory_ratio)
-
-        # 4. PPO-style min at trajectory level
-        # trajectory_ratio * advantage: (B, G) * (B, G) → (B, G)
-        # clipped_ratio * advantage: (B, G) * (B, G) → (B, G)
-        # torch.minimum: (B, G), (B, G) → (B, G)
-        surrogate1 = trajectory_ratio * advantage
-        surrogate2 = clipped_ratio * advantage
-        ratio_min = torch.minimum(surrogate1, surrogate2)
-
-        # 5. Mean over all trajectories
-        # ratio_min: (B, G) → scalar
-        loss = ratio_min.mean()
-
-        return loss
+        # Mean over all trajectories
+        # seq_loss.mean(): (B,) → scalar
+        return seq_loss.mean()

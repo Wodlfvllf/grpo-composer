@@ -21,8 +21,8 @@ from .base import AdvantageFunction
 class KalmanAdvantageFunction(AdvantageFunction):
     def __init__(
         self, 
-        process_noise: float = 1e-4,    # Q
-        measurement_noise: float = 1.0,  # R
+        process_noise: float = 1e-5,    # Q (paper default: 1e-5)
+        measurement_noise: float = 1e-2,  # R (paper default: 1e-2)
         epsilon: float = 1e-8
     ):
         super().__init__()

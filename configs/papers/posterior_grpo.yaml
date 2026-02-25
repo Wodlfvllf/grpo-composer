@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────
+# P-GRPO — Posterior-GRPO: Rewarding Reasoning Processes
+# Paper: "Posterior-GRPO: Rewarding Reasoning Processes in Code Generation"
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. REWARD: Composite reward with posterior gating
+#      R_i = R_f + R_o + R_o × R_t
+#      → core/rewards/posterior_composite.py
+#   2. CLIPPING: Asymmetric clip-higher (DAPO-style)
+#      ε_low = 0.2, ε_high = 0.28
+#   3. AGGREGATION: Token-level loss (global token normalization)
+#   4. KL: Removed (no KL divergence term)
+#
+# Components:
+#   Advantage:     Standard GRPO (base)
+#   Clipping:      Asymmetric (like DAPO) — ε_low=0.2, ε_high=0.28
+#   Aggregation:   Global token (like DAPO) — sum / total_tokens
+#   Regularizer:   None (no KL)
+#   Reward:        PosteriorCompositeRewardCalculator (P-GRPO specific!)
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    # ── Composer config ──
+    clip_mode: "asymmetric"             # clip-higher mechanism
+    clip_ratio_low: 0.2                 # ε_low
+    clip_ratio_high: 0.28              # ε_high
+    agg_mode: "global_token"            # Token-level loss strategy
+    regularizer: "none"                 # No KL divergence term
+    reg_coef: 0.0

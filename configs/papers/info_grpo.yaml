@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────────────
+# Info-GRPO — Correlation-Based Gradient Shaping
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Replaces KL regularizer with correlation-aware MI regularizer:
+#      J_Info = α·H(π_θ(T_ori)) - H(π_θ(T_aug|z))
+#   2. Merges original and augmented trajectories for GRPO advantage:
+#      J_GRPO(θ, T_ori ∪ T_aug)
+#   3. Avoids the "singularity trap" of standard entropy regularization
+#
+# Architecture:
+#   The training loop must generate TWO sets of trajectories per batch:
+#     T_ori: standard rollouts from π_θ(·|s0)
+#     T_aug: z-conditioned rollouts from π_θ(·|s0, z) where z ~ p(Z)
+#   Both sets feed into GRPO advantage computation.
+#   The MI regularizer only uses their log-probs.
+#
+# Components:
+#   Advantage:     Standard GRPO (computed on T_ori ∪ T_aug)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   Token mean (base GRPO)
+#   Regularizer:   Mutual Information (Info-GRPO specific!)
+#                  → core/regularizers/mutual_information.py
+#
+# Note: Training loop must inject augmented log-probs into config:
+#   config._composer_log_probs_aug = log_probs from T_aug
+#   config._composer_mask_aug = mask for T_aug
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "mutual_info"         # Info-GRPO MI regularizer
+    reg_coef: 0.1                      # λ scaling for MI term
+    # ── Info-GRPO parameters ──
+    info_alpha: 1.0                    # α weight for unconditional entropy
+                                       # α=1 → full mutual information I(τ,z)
+                                       # α<1 → tempered (mitigates gradient instability)

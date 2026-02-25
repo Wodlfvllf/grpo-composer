@@ -10,7 +10,7 @@ Usage:
 
     # Then use in YAML config:
     #   algorithm.adv_estimator: "difficulty_aware_grpo"
-    #   actor_rollout_ref.actor.loss_fn: "dapo_loss"
+    #   actor_rollout_ref.actor.loss_fn: "composer"
 """
 
 from . import advantages  # registers @register_adv_est decorators

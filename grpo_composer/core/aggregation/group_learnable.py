@@ -27,105 +27,72 @@ Mathematical Form:
         λ > 0  → Reward length
         λ learnable → Adaptive
 """
-from ..advantages import *
-from ..clipping import *
-import torch 
+import torch
 import torch.nn as nn
 from .base import AggregationFunction
 
+
 class GroupLearnableAggregation(AggregationFunction):
-    def __init__(self, lambda_: float = 1.0, r: float = 1.0, learnable: bool = False):
+    def __init__(self, lambda_: float = 0.0, r: float = 0.1111, learnable: bool = True):
         super().__init__()
         if learnable:
             self.lambda_ = nn.Parameter(torch.tensor(lambda_))
             self.r = nn.Parameter(torch.tensor(r))
         else:
-            self.register_buffer('lambda_', torch.tensor(lambda_))
-            self.register_buffer('r', torch.tensor(r))
-    
-    def compute_aggregation(
+            self.lambda_ = torch.tensor(lambda_)
+            self.r = torch.tensor(r)
+
+    def aggregate(
         self,
-        rewards: torch.Tensor,          # (B, G)
-        log_probs: torch.Tensor,        # (B, G, T)
-        ref_log_probs: torch.Tensor,    # (B, G, T)
-        mask: torch.Tensor              # (B, G, T) - 1=valid token, 0=padding
+        loss_per_token: torch.Tensor,   # (B, T) — pre-computed per-token surrogate losses
+        mask: torch.Tensor,             # (B, T) — 1=valid token, 0=padding
+        **kwargs,
     ) -> torch.Tensor:
         """
         Shape Flow:
-            Input:  rewards (B, G), log_probs (B, G, T), ref_log_probs (B, G, T), mask (B, G, T)
-            Step 1: advantage (B, G)
-            Step 2: ratio (B, G, T)
-            Step 3: clipped_ratio (B, G, T)
-            Step 4: ratio_min (B, G, T) = min(ratio * A, clipped * A)
-            Step 5: seq_lengths (B, G), mean_length (B,), std_length (B,), z (B, G), h (B, G), f_λ (B, G)
-            Step 6: weighted_loss (B, G, T)
-            Step 7: loss_per_token (B, G, T)
-            Step 8: total_loss (scalar), total_tokens (scalar), loss (scalar)
+            Input:  loss_per_token (B, T), mask (B, T)
+            Step 1: seq_lengths (B,) — token counts per sequence
+            Step 2: mean_length (scalar), std_length (scalar)
+            Step 3: z (B,) — standardized length scores
+            Step 4: h (B,) — shifted scores: 1 + r * z
+            Step 5: f_λ (B,) — power-law weights: B * softmax(h^λ)
+            Step 6: weighted_loss (B, T) — f_λ * loss_per_token
+            Step 7: loss (scalar) — global token normalization
+
+        Key difference: Learns per-response weights based on length (λ-GRPO).
         """
-        B, G, T = log_probs.shape
+        B = loss_per_token.shape[0]
 
-        # 1. Trajectory-level advantage
-        # rewards: (B, G) → advantage: (B, G)
-        advantage = StandardAdvantageFunction().compute_advantages(rewards)
+        # Sequence lengths
+        # mask.sum(dim=-1): (B, T) → (B,)
+        seq_lengths = mask.sum(dim=-1).float()
 
-        # 2. Token-level ratio
-        # log_probs - ref_log_probs: (B, G, T) → ratio: (B, G, T)
-        ratio = torch.exp(log_probs - ref_log_probs)
+        # Standardize lengths
+        # mean_length: scalar, std_length: scalar
+        mean_length = seq_lengths.mean()
+        std_length = seq_lengths.std() + 1e-8
 
-        # 3. Clip ratio (NOT product)
-        # ratio: (B, G, T) → clipped_ratio: (B, G, T)
-        clipped_ratio = AsymmetricClippingMechanism().clip(ratio)
-
-        # 4. PPO-style min
-        # advantage.unsqueeze(-1): (B, G) → (B, G, 1) for broadcasting
-        # ratio * advantage: (B, G, T) * (B, G, 1) → (B, G, T)
-        # clipped_ratio * advantage: (B, G, T) * (B, G, 1) → (B, G, T)
-        # torch.minimum: (B, G, T), (B, G, T) → (B, G, T)
-        ratio_min = torch.minimum(
-            ratio * advantage.unsqueeze(-1),
-            clipped_ratio * advantage.unsqueeze(-1)
-        )
-
-        # 5. Compute λ-GRPO learnable weights f_λ(o_i)
-        # mask.sum(dim=-1): (B, G, T) → (B, G) - token counts per sequence
-        seq_lengths = mask.sum(dim=-1)
-        
-        # mean_length: (B, G) → (B,) - mean length per batch
-        # std_length: (B, G) → (B,) - std length per batch
-        mean_length = seq_lengths.mean(dim=-1)
-        std_length = seq_lengths.std(dim=-1)
-        
         # z: standardized length scores
-        # seq_lengths: (B, G), mean_length.unsqueeze(-1): (B,) → (B, 1)
-        # z: (B, G) - (B, 1) / (B, 1) → (B, G)
-        z = (seq_lengths - mean_length.unsqueeze(-1)) / (std_length.unsqueeze(-1) + 1e-8)
-        
-        # h: shifted scores, h: (B, G)
+        # (seq_lengths - mean_length) / std_length: (B,)
+        z = (seq_lengths - mean_length) / std_length
+
+        # h: shifted scores
+        # 1 + self.r * z: (B,)
         h = 1 + self.r * z
-        
+
         # f_λ: power-law weights with softmax normalization
-        # h ** self.lambda_: (B, G)
-        # softmax(dim=-1): (B, G) → (B, G) (sums to 1 over G)
-        # G * softmax: (B, G) - rescaled to sum to G
-        f_lambda = G * torch.softmax(h ** self.lambda_, dim=-1)
+        # h ** self.lambda_: (B,)
+        # B * softmax(dim=0): (B,) — sums to B
+        f_lambda = B * torch.softmax(h ** self.lambda_, dim=0)
 
-        # 6. Apply learnable weights
-        # f_lambda.unsqueeze(-1): (B, G) → (B, G, 1)
-        # ratio_min: (B, G, T)
-        # weighted_loss: (B, G, 1) * (B, G, T) → (B, G, T)
-        weighted_loss = f_lambda.unsqueeze(-1) * ratio_min
+        # Apply learnable weights
+        # f_lambda.unsqueeze(-1): (B,) → (B, 1)
+        # loss_per_token * mask: (B, T)
+        # weighted_loss: (B, 1) * (B, T) → (B, T)
+        weighted_loss = f_lambda.unsqueeze(-1) * loss_per_token * mask
 
-        # 7. Mask padding tokens
-        # weighted_loss * mask: (B, G, T) * (B, G, T) → (B, G, T)
-        loss_per_token = weighted_loss * mask
-
-        # 8. Global token normalization
-        # loss_per_token.sum(): (B, G, T) → scalar
-        # mask.sum(): (B, G, T) → scalar
-        # Division: scalar / scalar → scalar
-        total_loss = loss_per_token.sum()
+        # Global token normalization
+        # weighted_loss.sum(): (B, T) → scalar
+        # mask.sum(): (B, T) → scalar
         total_tokens = mask.sum()
-        loss = total_loss / (total_tokens + 1e-8)
-
-        return loss
-
+        return weighted_loss.sum() / (total_tokens + 1e-8)

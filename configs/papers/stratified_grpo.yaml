@@ -1,0 +1,42 @@
+# ──────────────────────────────────────────────────────
+# Stratified GRPO — Handling Structural Heterogeneity
+# Paper: "Stratified GRPO: Handling Structural Heterogeneity
+#         in Reinforcement Learning of LLM Search Agents"
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. ADVANTAGE: Stratified Advantage Normalization (SAN)
+#      Partitions trajectories into strata (e.g., by search count)
+#      Normalizes within each stratum instead of globally
+#      A^{SAN} = (R_i - μ_k) / (σ_k + ε)     [per-stratum]
+#   2. Optional blending with global normalization:
+#      A^{blend} = α·A^{SAN} + (1-α)·A^{GN}
+#
+# Problem solved:
+#   Global normalization introduces cross-stratum bias when
+#   trajectories have structurally different reward distributions
+#   (e.g., different search counts in multi-turn agents).
+#   SAN eliminates between-stratum variance.
+#
+# Components:
+#   Advantage:     StratifiedAdvantageFunction (Stratified-GRPO specific!)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   Token mean (base GRPO)
+#   KL:            Optional
+#
+# Note: Training loop must provide stratum IDs for each trajectory
+#   (e.g., search count, structure type).
+
+algorithm:
+  adv_estimator: "stratified_grpo"      # Stratified advantage (from grpo_composer)
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01
+    # ── Stratified-GRPO params ──
+    stratified_alpha: 1.0               # α: 1.0 = pure SAN, 0.0 = pure GN

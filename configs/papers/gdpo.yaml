@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────
+# GDPO — Group reward-Decoupled Normalization Policy Optimization
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Decoupled advantage: normalize EACH reward separately, THEN sum
+#      (prevents reward collapse where different reward combos → same advantage)
+#   2. Batch-wise normalization on the summed advantages
+#   3. Optional weighted aggregation: A_sum = Σ_k w_k * A_k
+#   4. Optional conditioned rewards: r_k = 0 if r_l < threshold
+#
+# Pipeline:
+#   Raw rewards (B, G, K) → MultiRewardProcessor → scalar rewards (B, G)
+#   OR: DecoupledAdvantageFunction directly on (B, G, K) multi-rewards
+#
+# Components:
+#   Advantage:   DecoupledAdvantageFunction (GDPO-specific)
+#   Reward:      MultiRewardProcessor (GDPO-specific, handles conditioning)
+#   Clipping:    Symmetric (base GRPO)
+#   Aggregation: Token mean (base GRPO)
+#   KL:          Standard KL (base GRPO)
+
+algorithm:
+  adv_estimator: "decoupled_grpo"      # GDPO decoupled advantage (from grpo_composer)
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config (all standard base GRPO) ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01

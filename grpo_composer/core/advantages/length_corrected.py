@@ -20,34 +20,39 @@ Benefit:
     Removes dependence on sequence length variance σ²_{sT,N}
 """
 
+import torch
+from .base import AdvantageFunction
+
+
 class LengthCorrectedAdvantageFunction(AdvantageFunction):
     def __init__(self, epsilon: float = 1e-8):
         super().__init__()
         self.epsilon = epsilon
 
-    def compute_advantages(self, rewards, lengths):
+    def compute_advantages(self, rewards: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         """
         TIC-GRPO advantage computation (length-corrected).
 
         Args:
-            rewards: list or np.array of shape [G]
-                    binary rewards per trajectory
-            lengths: list or np.array of shape [G]
-                    number of tokens per trajectory
+            rewards: (B, G) binary rewards per trajectory
+            lengths: (B, G) number of tokens per trajectory
 
         Returns:
-            advantages: np.array of shape [G]
-                        one advantage per trajectory
-        """
-        rewards = np.asarray(rewards, dtype=np.float32)
-        lengths = np.asarray(lengths, dtype=np.float32)
+            advantages: (B, G) length-corrected advantages
 
+        Shape Flow:
+            rewards: (B, G), lengths: (B, G)
+            reward_per_token: (B, G) — r / |o|
+            mean: (B, 1) — group mean of reward_per_token
+            std: (B, 1) — group std of reward_per_token
+            advantages: (B, G) — (reward_per_token - mean) / (std + ε)
+        """
         # 1. Convert reward -> reward per token
-        reward_per_token = rewards / lengths
+        reward_per_token = rewards / (lengths + self.epsilon)
 
         # 2. Group normalization
-        mean = reward_per_token.mean()
-        std = reward_per_token.std() + self.epsilon
+        mean = reward_per_token.mean(dim=-1, keepdim=True)
+        std = reward_per_token.std(dim=-1, keepdim=True) + self.epsilon
 
         advantages = (reward_per_token - mean) / std
         return advantages

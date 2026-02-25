@@ -83,8 +83,10 @@ class DecoupledAdvantageFunction(AdvantageFunction):
         else:
             advantages = normalized.sum(dim=-1)  # (B, G)
         
-        # Step 3: Batch-wise normalization
-        batch_mean = advantages.mean(dim=-1, keepdim=True)
-        batch_std = advantages.std(dim=-1, keepdim=True)
+        # Step 3: Batch-wise normalization (across ALL (i,j) pairs in batch)
+        # Paper Eq.6: normalize across {A_sum^(i',j') | i' in D_batch, j'=1..G}
+        # This flattens B×G then normalizes globally, NOT per-question
+        batch_mean = advantages.mean()
+        batch_std = advantages.std()
         
         return (advantages - batch_mean) / (batch_std + self.eps)

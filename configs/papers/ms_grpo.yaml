@@ -1,0 +1,37 @@
+# ──────────────────────────────────────────────────────
+# MS-GRPO — Multi-Scale Group Relative Policy Optimization
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Multi-scale advantage: computes advantages at multiple subgroup sizes
+#      τ ∈ {τ_min, ..., G}, then hierarchically aggregates
+#   2. Â^{MS-GRPO} = Σ_τ w_τ · Ā^(τ)  (weighted average across scales)
+#   3. Each Ā^(τ) averages over all C(G-1, τ-1) subgroups of size τ
+#
+# Components:
+#   Advantage:     MultiScaleAdvantageFunction (MS-GRPO specific!)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   Token mean (base GRPO)
+#   KL:            Standard KL (base GRPO)
+#
+# Note: Current implementation uses exhaustive enumeration of subgroups.
+#   Paper also proposes dilated scale sampling (M scales) and greedy diverse
+#   group sampling (K groups) for acceleration — not yet implemented.
+#   For G=8-12 the exhaustive version is tractable.
+
+algorithm:
+  adv_estimator: "multi_scale_grpo"     # MS-GRPO (from grpo_composer)
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01
+    # ── MS-GRPO advantage params ──
+    ms_tau_min: 2                       # Minimum subgroup size (pairwise)
+    # ms_tau_max: null                  # Max = G (auto from group size)
+    # ms_weights: null                  # Uniform weights by default

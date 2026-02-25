@@ -1,34 +1,36 @@
 """
 Base Abstract Class for Loss Aggregation in GRPO
 
-Aggregation controls how token-level and group-level losses are combined:
-- Token Mean Loss: 1/|o_i| (per-sequence average)
-- Group Mean Loss: 1/G (per-group average)
+Aggregation controls how token-level surrogate losses are reduced to a scalar:
+- Token Mean: (1/|o_i|) per-sequence average, then group mean
+- Token Sum: sum tokens directly (no length normalization)
+- Global Token: 1/Σ|o_i| across all sequences
+- Difficulty Weighted: learnable per-difficulty-bin weights
+- Group Learnable: power-law length-based weights
 
-Different papers modify these aggregation strategies:
-- Base GRPO: (1/G) * Σ (1/|o_i|) * Σ_t loss_t
-- Dr.GRPO: Removes 1/|o_i| (sum instead of mean)
-- DAPO: Global token normalization 1/Σ|o_i|
-- λ-GRPO: Learnable response-level weights
-- DARO: Learnable per-difficulty weights
-- TIC-GRPO: Trajectory-level aggregation
-- TR-GRPO: Probability-weighted token aggregation
+The aggregation function receives PRE-COMPUTED per-token losses.
+Advantage computation and clipping happen UPSTREAM (not inside aggregation).
 """
 from abc import ABC, abstractmethod
+import torch
+
 
 class AggregationFunction(ABC):
     @abstractmethod
-    def compute_aggregation(
+    def aggregate(
         self,
-        loss_clipped: torch.Tensor,
-        ) -> torch.Tensor:
+        loss_per_token: torch.Tensor,   # (B, T) — pre-computed per-token surrogate losses
+        mask: torch.Tensor,             # (B, T) — 1=valid token, 0=padding
+        **kwargs,
+    ) -> torch.Tensor:
         """
-        Compute aggregation.
-        
+        Reduce per-token losses to a scalar.
+
         Args:
-            loss_clipped: (B, G, T)
-            
+            loss_per_token: (B, T) token-level losses (already clipped, already multiplied by advantage)
+            mask: (B, T) valid token mask
+
         Returns:
-            aggregation: (B, G) aggregation
+            loss: scalar
         """
         pass

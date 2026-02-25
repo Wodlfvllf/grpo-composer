@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────
+# GAPO — Group-Aware Policy Optimization
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   NONE in the policy optimization pipeline.
+#
+#   GAPO's sole contribution is the REWARD function:
+#     r_i = R̃(o)_i  — group-aware frequency-based reward
+#     R̃(o)_i = 1 - |f_{o_i} - 1/L|  if o_i ∈ V, else -1
+#
+#   The reward encourages UNIFORM sampling over valid responses.
+#   All other components (advantage, clipping, aggregation, KL) are standard GRPO.
+#
+# Core component:
+#   core/rewards/frequency_aware.py → FrequencyAwareRewardCalculator
+#
+# Note: The frequency-aware reward is applied BEFORE the GRPO pipeline.
+#   It's a reward-level change, not a loss-level change. The reward
+#   calculator needs to be called in the reward worker, not in the loss.
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config (all standard base GRPO) ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01

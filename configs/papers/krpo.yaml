@@ -1,0 +1,37 @@
+# ──────────────────────────────────────────────────────
+# KRPO — Kalman Filter Enhanced GRPO
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Advantage baseline: Kalman filter state estimate x̂ (replaces group mean)
+#   2. Advantage normalization: √P (posterior uncertainty, replaces group std)
+#   3. Formula: A_i = (r_i - x̂_{i|i}) / (√P_{i|i} + ε)
+#
+# The Kalman filter adaptively tracks the reward baseline across steps,
+# giving recent rewards more influence via the Kalman gain K.
+#
+# Connection to GRPO:
+#   Standard GRPO is a special case with Q→0 (constant baseline).
+#   KRPO generalizes by allowing Q>0 for dynamic baseline tracking.
+#
+# Components:
+#   Advantage:     KalmanAdvantageFunction (KRPO-specific)
+#   Clipping:      Symmetric (base GRPO)
+#   Aggregation:   Token mean (base GRPO)
+#   KL:            Standard KL with β=0.01
+
+algorithm:
+  adv_estimator: "kalman_grpo"          # Kalman filter advantage (from grpo_composer)
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config (all standard base GRPO) ──
+    clip_mode: "symmetric"
+    agg_mode: "token_mean"
+    regularizer: "kl"
+    reg_coef: 0.01                      # β = 0.01 (paper default)
+    # ── KRPO Kalman parameters (paper defaults) ──
+    kalman_Q: 1e-5                      # Process noise (baseline flexibility)
+    kalman_R: 1e-2                      # Measurement noise (outlier sensitivity)

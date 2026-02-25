@@ -1,19 +1,20 @@
 # ──────────────────────────────────────────────────────
-# Rank-GRPO — Intra-Group Preference Ranking
-# Paper: "RankGRPO: Ranking Reward Model"
+# Rewarding the Unlikely — Lifting GRPO Beyond Distribution Sharpening
+# Paper: https://arxiv.org/abs/2503.xxxxx
 # ──────────────────────────────────────────────────────
 # Key changes from base GRPO:
-#   1. REWARD: Combines binary correctness with intra-group ranking
-#      Three modes (set via ranking_method):
-#        "weight":     s_rank = exp(τ·(1-r)) · s_rule
-#        "supplement": s_rank = s_rule + τ · tanh(G/r - 1)
-#        "reward":     s_rank = (G - r) / (G - 1)
-#   2. Advantage clipping by correctness:
-#        If correct:   A_clip = max(A, ξ⁻)
-#        If incorrect: A_clip = min(A, ξ⁺)
+#   1. REWARD: Unlikeliness reward — rank-based penalty on correct solutions
+#      r_i = R(x,y) × (1 - β_rank × (G - rank(y_i)) / G)
+#      → core/rewards/unlikeliness.py
+#
+# Problem solved:
+#   Standard GRPO sharpens the distribution around already-likely solutions,
+#   improving pass@1 but DEGRADING pass@N for large N.
+#   The unlikeliness reward creates higher advantages for rare correct proofs,
+#   improving coverage/diversity.
 #
 # Components:
-#   Reward:        RankEnhancedRewardCalculator (Rank-GRPO specific!)
+#   Reward:        UnlikelinessRewardCalculator (paper-specific!)
 #   Advantage:     Standard GRPO (base)
 #   Clipping:      Symmetric (base GRPO)
 #   Aggregation:   Token mean (base GRPO)
@@ -31,6 +32,5 @@ actor_rollout_ref:
     agg_mode: "token_mean"
     regularizer: "kl"
     reg_coef: 0.01
-    # ── Rank-GRPO reward params ──
-    ranking_method: "weight"            # "weight", "supplement", or "reward"
-    ranking_tau: 0.1                    # Temperature for rank scaling
+    # ── Unlikeliness reward params ──
+    unlikeliness_beta: 0.5              # β_rank: strength of rank penalty
