@@ -1,0 +1,19 @@
+# ──────────────────────────────────────────────────────
+# Base GRPO (DeepSeekMath)
+# Paper: https://arxiv.org/abs/2402.03300
+# ──────────────────────────────────────────────────────
+# Standard GRPO with symmetric clipping, token-mean aggregation, KL regularizer.
+# This is the default configuration that all variants modify from.
+
+algorithm:
+  adv_estimator: "grpo"
+
+actor_rollout_ref:
+  actor:
+    loss_fn: "composer"
+    clip_ratio: 0.2
+    # ── Composer config ──
+    clip_mode: "symmetric"           # Standard PPO clip(ρ, 1-ε, 1+ε)
+    agg_mode: "token_mean"           # (1/G) Σ_i (1/|o_i|) Σ_t
+    regularizer: "kl"               # Standard forward KL
+    reg_coef: 0.01                   # β = 0.01
