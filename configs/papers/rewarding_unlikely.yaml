@@ -21,17 +21,17 @@
 #   KL:            Standard KL (base GRPO)
 
 algorithm:
-  adv_estimator: "grpo"
-  composer_reward_pipeline: ["unlikeliness"]
-
+  adv_estimator: grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config (all standard base GRPO) ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01
-    # ── Unlikeliness reward params ──
-    unlikeliness_beta: 0.5              # β_rank: strength of rank penalty
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01
+  unlikeliness_beta: 0.5
+  composer_reward_pipeline:
+  - unlikeliness

@@ -614,11 +614,52 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._inject_composer_config()
         self.composer_context = FlowRuntimeContext()
         self.composer_flow_plugins = self._build_flow_plugins()
         for plugin in self.composer_flow_plugins:
             plugin.configure(self)
         self._validate_supported_modes()
+
+    def _inject_composer_config(self) -> None:
+        """Inject top-level ``composer:`` keys into the actor OmegaConf config.
+
+        veRL validates ``actor_rollout_ref.actor`` as ``FSDPActorConfig`` at startup,
+        rejecting unknown keys. Our composer-specific keys (clip_mode, agg_mode,
+        regularizer, etc.) live under a top-level ``composer:`` namespace in the YAML.
+        After validation passes, we merge them into the actor's OmegaConf dict so the
+        loss function can read them via ``_config_get(config, 'clip_mode', ...)``.
+        """
+        composer_cfg = _cfg_get(self.config, "composer", None)
+        if composer_cfg is None:
+            return
+
+        # Get the actor config sub-tree (OmegaConf DictConfig at this point)
+        actor_rollout_ref = _cfg_get(self.config, "actor_rollout_ref", None)
+        actor_cfg = _cfg_get(actor_rollout_ref, "actor", None)
+        if actor_cfg is None:
+            return
+
+        # Merge composer keys into actor config so loss/advantage functions can find them
+        try:
+            from omegaconf import OmegaConf
+
+            if OmegaConf.is_config(actor_cfg):
+                OmegaConf.set_struct(actor_cfg, False)
+                if OmegaConf.is_config(composer_cfg):
+                    for key in composer_cfg:
+                        actor_cfg[key] = composer_cfg[key]
+                else:
+                    for key, value in (composer_cfg if isinstance(composer_cfg, dict) else {}).items():
+                        actor_cfg[key] = value
+                OmegaConf.set_struct(actor_cfg, True)
+            else:
+                # Plain dict fallback
+                if isinstance(actor_cfg, dict) and isinstance(composer_cfg, dict):
+                    actor_cfg.update(composer_cfg)
+        except ImportError:
+            if isinstance(actor_cfg, dict) and isinstance(composer_cfg, dict):
+                actor_cfg.update(composer_cfg)
 
     def _build_flow_plugins(self) -> list[FlowPlugin]:
         flow_names = _parse_flow_list(self.config)
@@ -634,9 +675,9 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         return plugins
 
     def _validate_supported_modes(self) -> None:
-        actor_cfg = _cfg_get(_cfg_get(self.config, "actor_rollout_ref", None), "actor", None)
-        agg_mode = _cfg_get(actor_cfg, "agg_mode", "token_mean")
-        lambda_learnable = bool(_cfg_get(actor_cfg, "lambda_learnable", False))
+        composer_cfg = _cfg_get(self.config, "composer", None)
+        agg_mode = _cfg_get(composer_cfg, "agg_mode", "token_mean")
+        lambda_learnable = bool(_cfg_get(composer_cfg, "lambda_learnable", False))
 
         if agg_mode == "group_learnable" and lambda_learnable:
             raise ValueError(

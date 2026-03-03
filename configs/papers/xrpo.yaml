@@ -1,0 +1,29 @@
+# ──────────────────────────────────────────────────────
+# XRPO — Novelty-Sharpened GRPO
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Novelty-sharpened advantage: adds entropy bonus for novel responses
+#      A' = A + λ * max(s - κ, 0), where s = -mean(log_probs)
+#   2. Encourages exploration of underexplored response distributions
+#
+# Components:
+#   Advantage:     NoveltySharpeningAdvantageFunction (XRPO specific!)
+#   Clipping:      Symmetric (base)
+#   Aggregation:   Token mean (base)
+#   Regularizer:   KL (base)
+
+algorithm:
+  adv_estimator: novelty_sharp_grpo
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01
+  novelty_lambda: 1.0
+  novelty_kappa: 1.0

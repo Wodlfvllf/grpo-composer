@@ -1,0 +1,23 @@
+# ──────────────────────────────────────────────────────
+# Dr.GRPO — Don't Let Your Gradient Dilute
+# Paper: https://arxiv.org/abs/2503.20783
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Token sum aggregation: Σ_t (no 1/|o_i| length normalization)
+#   2. No KL penalty (β = 0)
+#   3. No std normalization in advantage (handled by veRL config)
+#   4. Keeps symmetric clipping
+
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: false
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_sum
+  regularizer: none
+  reg_coef: 0.0

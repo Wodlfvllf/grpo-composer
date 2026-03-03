@@ -28,19 +28,16 @@
 #   config._composer_mask_aug = mask for T_aug
 
 algorithm:
-  adv_estimator: "grpo"
-  composer_flow: "info_grpo"
-
+  adv_estimator: grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "mutual_info"         # Info-GRPO MI regularizer
-    reg_coef: 0.1                      # λ scaling for MI term
-    # ── Info-GRPO parameters ──
-    info_alpha: 1.0                    # α weight for unconditional entropy
-                                       # α=1 → full mutual information I(τ,z)
-                                       # α<1 → tempered (mitigates gradient instability)
+    info_alpha: 1.0
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: mutual_info
+  reg_coef: 0.1
+  composer_flow: info_grpo

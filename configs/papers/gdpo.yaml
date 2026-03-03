@@ -21,15 +21,16 @@
 #   KL:          Standard KL (base GRPO)
 
 algorithm:
-  adv_estimator: "decoupled_grpo"      # GDPO decoupled advantage (from grpo_composer)
-  composer_reward_pipeline: ["multi_reward"]
-
+  adv_estimator: decoupled_grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config (all standard base GRPO) ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01
+  composer_reward_pipeline:
+  - multi_reward

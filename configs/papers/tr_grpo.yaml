@@ -1,0 +1,25 @@
+# ──────────────────────────────────────────────────────
+# TR-GRPO — Trust Region GRPO
+# Paper: https://arxiv.org/abs/2503.12345
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Weighted trust region clipping: per-token dynamic bounds
+#   2. Weighted token aggregation: down-weights confident tokens
+#   3. Weighted KL divergence regularizer
+#   4. All weights derived from token probability confidence
+
+algorithm:
+  adv_estimator: grpo
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: weighted_trust
+  agg_mode: weighted_token
+  regularizer: weighted_kl
+  reg_coef: 0.01
+  tr_alpha: 1.0
+  tr_tau: 1.0
+  tr_mu: 0.5

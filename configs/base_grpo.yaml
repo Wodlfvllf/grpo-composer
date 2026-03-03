@@ -10,10 +10,12 @@ algorithm:
 
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "symmetric"           # Standard PPO clip(ρ, 1-ε, 1+ε)
-    agg_mode: "token_mean"           # (1/G) Σ_i (1/|o_i|) Σ_t
-    regularizer: "kl"               # Standard forward KL
-    reg_coef: 0.01                   # β = 0.01
+    policy_loss:
+      loss_mode: "composer"
+
+composer:
+  clip_mode: "symmetric"           # Standard PPO clip(ρ, 1-ε, 1+ε)
+  clip_ratio: 0.2
+  agg_mode: "token_mean"           # (1/G) Σ_i (1/|o_i|) Σ_t
+  regularizer: "kl"               # Standard forward KL
+  reg_coef: 0.01                   # β = 0.01

@@ -112,34 +112,35 @@ class TestLengthDependentRewardCalculator:
     def test_shorter_correct_boosted(self):
         """Shorter correct response gets higher reward."""
         responses = [[1, 2], [1, 2, 3, 4, 5, 6]]  # Short, Long
-        labels = [1, 1]
-        calc = LengthDependentRewardCalculator(responses, labels, alpha=0.1)
-        result = calc.compute_rewards()
+        labels = torch.tensor([1, 1])
+        calc = LengthDependentRewardCalculator(alpha=0.1)
+        result = calc.compute_rewards(responses, labels)
         assert result[0] > result[1]
     
     def test_incorrect_penalty(self):
         """Incorrect response gets -1."""
-        responses = [[1, 2, 3]]
-        labels = [0]
         # Need at least one correct for stats, so add one
         responses = [[1, 2], [1, 2, 3]]
-        labels = [1, 0]
-        calc = LengthDependentRewardCalculator(responses, labels)
-        result = calc.compute_rewards()
+        labels = torch.tensor([1, 0])
+        calc = LengthDependentRewardCalculator()
+        result = calc.compute_rewards(responses, labels)
         assert result[1] == -1.0
     
     def test_mean_length_neutral(self):
         """Single correct response → z=0 → reward=1.0."""
         responses = [[1, 2, 3]]
-        labels = [1]
-        calc = LengthDependentRewardCalculator(responses, labels)
-        result = calc.compute_rewards()
+        labels = torch.tensor([1])
+        calc = LengthDependentRewardCalculator()
+        result = calc.compute_rewards(responses, labels)
         assert torch.allclose(result, torch.tensor([1.0]), atol=1e-4)
     
-    def test_no_correct_raises(self):
-        """Error if no correct responses."""
-        with pytest.raises(ValueError):
-            LengthDependentRewardCalculator([[1]], [0])
+    def test_no_correct_fallback(self):
+        """No correct responses falls back to fixed incorrect penalties."""
+        responses = [[1], [1, 2, 3]]
+        labels = torch.tensor([0, 0])
+        calc = LengthDependentRewardCalculator()
+        result = calc.compute_rewards(responses, labels)
+        assert torch.allclose(result, torch.tensor([-1.0, -1.0]))
 
 
 # =============================================================================

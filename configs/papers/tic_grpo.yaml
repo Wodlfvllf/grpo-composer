@@ -1,0 +1,23 @@
+# ──────────────────────────────────────────────────────
+# TIC-GRPO — Trajectory-level Importance Correction GRPO
+# Paper: https://arxiv.org/abs/2503.xxxxx
+# ──────────────────────────────────────────────────────
+# Key changes from base GRPO:
+#   1. Length-corrected advantage: removes length bias from rewards
+#   2. Trajectory-level clipping: clips at sequence level, not token level
+#   3. Upper-only clip: only caps ratio growth (no lower bound penalty)
+#   4. Standard KL regularizer
+
+algorithm:
+  adv_estimator: length_corrected_grpo
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: trajectory
+  clip_ratio_high: 1.28
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01

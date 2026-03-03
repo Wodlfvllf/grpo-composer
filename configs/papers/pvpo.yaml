@@ -20,15 +20,15 @@
 #   KL:            Standard KL with β
 
 algorithm:
-  adv_estimator: "static_value_grpo"    # PVPO static V advantage (from grpo_composer)
-  composer_flow: "pvpo"
-
+  adv_estimator: static_value_grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01                      # β for KL divergence
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01
+  composer_flow: pvpo

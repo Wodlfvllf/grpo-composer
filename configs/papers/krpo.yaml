@@ -21,17 +21,16 @@
 #   KL:            Standard KL with β=0.01
 
 algorithm:
-  adv_estimator: "kalman_grpo"          # Kalman filter advantage (from grpo_composer)
-
+  adv_estimator: kalman_grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config (all standard base GRPO) ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01                      # β = 0.01 (paper default)
-    # ── KRPO Kalman parameters (paper defaults) ──
-    kalman_Q: 1e-5                      # Process noise (baseline flexibility)
-    kalman_R: 1e-2                      # Measurement noise (outlier sensitivity)
+    kalman_Q: 1e-5
+    kalman_R: 1e-2
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01

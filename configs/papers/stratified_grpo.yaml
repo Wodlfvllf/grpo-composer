@@ -27,16 +27,15 @@
 #   (e.g., search count, structure type).
 
 algorithm:
-  adv_estimator: "stratified_grpo"      # Stratified advantage (from grpo_composer)
-
+  adv_estimator: stratified_grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01
-    # ── Stratified-GRPO params ──
-    stratified_alpha: 1.0               # α: 1.0 = pure SAN, 0.0 = pure GN
+    stratified_alpha: 1.0
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01

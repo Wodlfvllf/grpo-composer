@@ -20,18 +20,15 @@
 #   For G=8-12 the exhaustive version is tractable.
 
 algorithm:
-  adv_estimator: "multi_scale_grpo"     # MS-GRPO (from grpo_composer)
-
+  adv_estimator: multi_scale_grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01
-    # ── MS-GRPO advantage params ──
-    ms_tau_min: 2                       # Minimum subgroup size (pairwise)
-    # ms_tau_max: null                  # Max = G (auto from group size)
-    # ms_weights: null                  # Uniform weights by default
+    ms_tau_min: 2
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01

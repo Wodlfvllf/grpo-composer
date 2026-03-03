@@ -27,18 +27,18 @@
 #   KL:            Optional
 
 algorithm:
-  adv_estimator: "grpo"
-  composer_reward_pipeline: ["rts"]
-
+  adv_estimator: grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config (all standard base GRPO) ──
-    clip_mode: "symmetric"
-    agg_mode: "token_mean"
-    regularizer: "kl"
-    reg_coef: 0.01
-    # ── SPO reward params ──
-    rts_beta: 5.0                       # Sigmoid scale intensity
-    rts_gamma: 0.5                      # Sigmoid threshold
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_ratio: 0.2
+  clip_mode: symmetric
+  agg_mode: token_mean
+  regularizer: kl
+  reg_coef: 0.01
+  rts_beta: 5.0
+  rts_gamma: 0.5
+  composer_reward_pipeline:
+  - rts

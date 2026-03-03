@@ -21,19 +21,21 @@ algorithm:
 
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    clip_ratio: 0.2
-    # ── Composer config ──
-    clip_mode: "asymmetric"             # From DAPO — allows more exploration
-    clip_ratio_low: 0.2
-    clip_ratio_high: 0.28
-    agg_mode: "global_token"            # From DAPO — each token weighted equally
-    regularizer: "weighted_kl"          # From TR-GRPO — confidence-weighted KL
-    reg_coef: 0.005                     # Lighter regularization (experimental)
-    # ── Kalman parameters ──
-    kalman_Q: 1e-4                      # Process noise (baseline volatility)
-    kalman_R: 1.0                       # Measurement noise (reward noise)
-    # ── TR-GRPO parameters (for weighted KL) ──
-    tr_alpha: 1.0
-    tr_tau: 1.0
-    tr_mu: 0.5
+    policy_loss:
+      loss_mode: "composer"
+
+composer:
+  clip_mode: "asymmetric"             # From DAPO — allows more exploration
+  clip_ratio: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  agg_mode: "global_token"            # From DAPO — each token weighted equally
+  regularizer: "weighted_kl"          # From TR-GRPO — confidence-weighted KL
+  reg_coef: 0.005                     # Lighter regularization (experimental)
+  # ── Kalman parameters ──
+  kalman_Q: 1e-4                      # Process noise (baseline volatility)
+  kalman_R: 1.0                       # Measurement noise (reward noise)
+  # ── TR-GRPO parameters (for weighted KL) ──
+  tr_alpha: 1.0
+  tr_tau: 1.0
+  tr_mu: 0.5

@@ -17,8 +17,14 @@ Usage:
     bash scripts/train.sh configs/custom_mix.yaml Qwen/Qwen2.5-7B openai/gsm8k 4
 """
 
-import os
 import sys
+from pathlib import Path
+
+# Ensure local repository root is first on sys.path when this file is executed
+# as a script (e.g., in Modal), so imports resolve to the mounted workspace code.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # ────────────────────────────────────────────────────
 # Step 1: Register grpo_composer components into veRL

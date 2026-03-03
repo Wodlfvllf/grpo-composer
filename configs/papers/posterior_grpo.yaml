@@ -19,16 +19,17 @@
 #   Reward:        PosteriorCompositeRewardCalculator (P-GRPO specific!)
 
 algorithm:
-  adv_estimator: "grpo"
-  composer_reward_pipeline: ["posterior"]
-
+  adv_estimator: grpo
 actor_rollout_ref:
   actor:
-    loss_fn: "composer"
-    # ── Composer config ──
-    clip_mode: "asymmetric"             # clip-higher mechanism
-    clip_ratio_low: 0.2                 # ε_low
-    clip_ratio_high: 0.28              # ε_high
-    agg_mode: "global_token"            # Token-level loss strategy
-    regularizer: "none"                 # No KL divergence term
-    reg_coef: 0.0
+    policy_loss:
+      loss_mode: composer
+composer:
+  clip_mode: asymmetric
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  agg_mode: global_token
+  regularizer: none
+  reg_coef: 0.0
+  composer_reward_pipeline:
+  - posterior
