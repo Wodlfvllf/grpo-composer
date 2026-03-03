@@ -15,5 +15,12 @@ Usage:
 
 from . import advantages  # registers @register_adv_est decorators
 from . import losses      # registers @register_policy_loss decorators
+from .trainer import ComposerRayPPOTrainer, patch_verl_main_ppo, unpatch_verl_main_ppo
 
-__all__ = ["advantages", "losses"]
+__all__ = [
+    "advantages",
+    "losses",
+    "ComposerRayPPOTrainer",
+    "patch_verl_main_ppo",
+    "unpatch_verl_main_ppo",
+]

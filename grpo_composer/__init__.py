@@ -4,7 +4,7 @@ GRPO Composer - Main Package
 Modular GRPO framework for LLM reinforcement learning.
 """
 
-from .rewards import (
+from .core.rewards import (
     RewardCalculator,
     BinaryRewardCalculator,
     DiversityAdjustedRewardCalculator,

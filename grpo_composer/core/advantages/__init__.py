@@ -1,7 +1,7 @@
 from .standard import StandardAdvantageFunction
 from .base import AdvantageFunction
 from .decoupled import DecoupledAdvantageFunction
-from .advantage_clipping import AdvantageClippingFunction
+from .advantage_clipping import AdvantageClipping
 from .difficulty_aware import DifficultyAwareAdvantageFunction
 from .length_corrected import LengthCorrectedAdvantageFunction
 from .multi_scale import MultiScaleAdvantageFunction
@@ -14,7 +14,7 @@ __all__ = [
     "StandardAdvantageFunction",
     "AdvantageFunction",
     "DecoupledAdvantageFunction",
-    "AdvantageClippingFunction",
+    "AdvantageClipping",
     "DifficultyAwareAdvantageFunction",
     "LengthCorrectedAdvantageFunction",
     "MultiScaleAdvantageFunction",
@@ -23,4 +23,3 @@ __all__ = [
     "StratifiedAdvantageFunction",
     "UnbiasedAdvantageFunction"
 ]
-
