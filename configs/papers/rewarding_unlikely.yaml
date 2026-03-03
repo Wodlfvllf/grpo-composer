@@ -22,6 +22,7 @@
 
 algorithm:
   adv_estimator: "grpo"
+  composer_reward_pipeline: ["unlikeliness"]
 
 actor_rollout_ref:
   actor:

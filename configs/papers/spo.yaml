@@ -28,6 +28,7 @@
 
 algorithm:
   adv_estimator: "grpo"
+  composer_reward_pipeline: ["rts"]
 
 actor_rollout_ref:
   actor:

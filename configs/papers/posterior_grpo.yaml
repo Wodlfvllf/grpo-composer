@@ -20,6 +20,7 @@
 
 algorithm:
   adv_estimator: "grpo"
+  composer_reward_pipeline: ["posterior"]
 
 actor_rollout_ref:
   actor:

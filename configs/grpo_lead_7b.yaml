@@ -15,6 +15,7 @@
 
 algorithm:
   adv_estimator: "difficulty_aware_grpo"
+  composer_reward_pipeline: ["length_dependent"]
 
 actor_rollout_ref:
   actor:

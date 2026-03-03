@@ -29,6 +29,7 @@
 
 algorithm:
   adv_estimator: "grpo"
+  composer_flow: "info_grpo"
 
 actor_rollout_ref:
   actor:
