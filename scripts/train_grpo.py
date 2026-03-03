@@ -27,6 +27,7 @@ import sys
 # decorators, making our custom components available to veRL.
 
 import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
+from grpo_composer.integrations.verl import patch_verl_main_ppo
 
 # After this import, veRL's registries now contain:
 #   ADV_ESTIMATOR_REGISTRY:
@@ -46,6 +47,7 @@ import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
 # Step 2: Launch veRL's GRPO training loop
 # ────────────────────────────────────────────────────
 
+patch_verl_main_ppo()
 from verl.trainer.main_ppo import main
 
 
@@ -57,6 +59,7 @@ if __name__ == "__main__":
     print("  Advantages:  difficulty_aware, length_corrected, kalman,")
     print("               decoupled, multi_scale, static_value, novelty_sharp")
     print("  Loss:        composer (clip_mode × agg_mode × regularizer)")
+    print("  Trainer:     ComposerRayPPOTrainer (patched over RayPPOTrainer)")
     print()
     print("=" * 60)
 
