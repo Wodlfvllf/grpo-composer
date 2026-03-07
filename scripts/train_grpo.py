@@ -31,22 +31,12 @@ if str(REPO_ROOT) not in sys.path:
 # ────────────────────────────────────────────────────
 # This single import triggers all @register_adv_est and @register_policy_loss
 # decorators, making our custom components available to veRL.
+# NOTE: The collective_rpc patch for vLLM 0.11.2 is applied at image build
+#       time via scripts/patch_verl_collective_rpc.py (not here, since Ray
+#       workers are separate processes).
 
 import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
 from grpo_composer.integrations.verl import patch_verl_main_ppo
-
-# After this import, veRL's registries now contain:
-#   ADV_ESTIMATOR_REGISTRY:
-#     "difficulty_aware_grpo"   (GRPO-LEAD)
-#     "length_corrected_grpo"   (TIC-GRPO)
-#     "kalman_grpo"             (KRPO)
-#     "decoupled_grpo"          (GDPO)
-#     "multi_scale_grpo"        (MS-GRPO)
-#     "static_value_grpo"       (PVPO)
-#     "novelty_sharp_grpo"      (XRPO)
-#
-#   POLICY_LOSS_REGISTRY:
-#     "composer"  — composable loss with configurable clip/agg/reg
 
 
 # ────────────────────────────────────────────────────

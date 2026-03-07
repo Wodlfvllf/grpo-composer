@@ -509,9 +509,6 @@ def compute_composer_loss(
         "actor/ppo_kl": ppo_kl.detach().item(),
         "actor/pg_loss": pg_loss.detach().item(),
         "actor/reg_term": reg_term_value.detach().item(),
-        "actor/clip_mode": clip_mode,
-        "actor/agg_mode": agg_mode,
-        "actor/regularizer": reg_name,
     }
     if sequence_rewards is not None:
         metrics["actor/sequence_reward_mean"] = sequence_rewards.mean().detach().item()

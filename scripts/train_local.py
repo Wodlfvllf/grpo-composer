@@ -1,40 +1,12 @@
 #!/usr/bin/env python3
-"""
-Run grpo_composer training on Modal.
+"""Local single-node launcher (official fallback to Modal launcher).
 
-Usage:
-    # Use existing parquet files:
-    modal run scripts/train_modal.py \
-      --config configs/base_grpo.yaml \
-      --model Qwen/Qwen2.5-0.5B-Instruct \
-      --train-files /data/gsm8k/train.parquet \
-      --val-files /data/gsm8k/test.parquet \
-      --run-name grpo_modal_run \
-      --total-epochs 3 \
-      --n-gpus-per-node 1
-
-    # Or auto-prepare GSM8K parquet in the Modal container:
-    modal run scripts/train_modal.py \
-      --config configs/base_grpo.yaml \
-      --model Qwen/Qwen2.5-0.5B-Instruct \
-      --dataset-preset gsm8k \
-      --run-name grpo_modal_run \
-      --total-epochs 3 \
-      --n-gpus-per-node 1
-
-Environment variables:
-    MODAL_GPU                  GPU config string or CSV fallback list.
-                               Default: A100-80GB
-                               Example: H100,A100-80GB,A100
-    MODAL_TIMEOUT_SEC          Function timeout in seconds. Default: 86400
-    MODAL_CHECKPOINT_VOLUME    Volume name for checkpoints.
-                               Default: grpo-composer-checkpoints
-    MODAL_HF_SECRET_NAME       Optional Modal Secret name for HF token.
-    MODAL_WANDB_SECRET_NAME    Optional Modal Secret name for W&B creds.
+This mirrors the core override behavior of scripts/train_modal.py without Modal.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -44,63 +16,15 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-import modal
 import yaml
 
 from grpo_composer.config.sanity import run_preflight_sanity_checks
-from grpo_composer.runtime_stack import (
-    CANONICAL_PIP_PACKAGES,
-    runtime_summary_text,
-    validate_runtime_stack,
-)
+from grpo_composer.runtime_stack import runtime_summary_text, validate_runtime_stack
 
 
-APP_NAME = "grpo-composer-train"
-REMOTE_ROOT = Path("/root/grpo_composer")
-CHECKPOINT_ROOT = Path("/checkpoints")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = Path("/tmp/grpo_data")
-
-
-def _parse_gpu_config(value: str) -> str | list[str]:
-    parts = [part.strip() for part in value.split(",") if part.strip()]
-    if len(parts) <= 1:
-        return parts[0] if parts else "A100-80GB"
-    return parts
-
-
-GPU_CONFIG = _parse_gpu_config(os.environ.get("MODAL_GPU", "A100-80GB"))
-TIMEOUT_SEC = int(os.environ.get("MODAL_TIMEOUT_SEC", str(24 * 60 * 60)))
-MAX_RETRIES = int(os.environ.get("MODAL_MAX_RETRIES", "0"))
-CHECKPOINT_VOLUME_NAME = os.environ.get(
-    "MODAL_CHECKPOINT_VOLUME",
-    "grpo-composer-checkpoints",
-)
-HF_SECRET_NAME = os.environ.get("MODAL_HF_SECRET_NAME", "").strip()
-WANDB_SECRET_NAME = os.environ.get("MODAL_WANDB_SECRET_NAME", "").strip()
-
-
-def _get_secret(secret_name: str) -> modal.Secret | None:
-    if not secret_name:
-        return None
-    return modal.Secret.from_name(secret_name)
-
-
-_secrets = [
-    secret
-    for secret in (_get_secret(HF_SECRET_NAME), _get_secret(WANDB_SECRET_NAME))
-    if secret is not None
-]
-
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install_from_pyproject("pyproject.toml")
-    # Keep runtime pins centralized in grpo_composer.runtime_stack.
-    .pip_install(*CANONICAL_PIP_PACKAGES)
-    .add_local_dir(".", remote_path=str(REMOTE_ROOT), copy=True)
-)
-
-app = modal.App(APP_NAME)
-checkpoint_volume = modal.Volume.from_name(CHECKPOINT_VOLUME_NAME, create_if_missing=True)
+CHECKPOINT_ROOT = REPO_ROOT / "checkpoints"
 
 
 def _flatten_mapping(prefix: str, value: Any, out: dict[str, Any]) -> None:
@@ -258,42 +182,24 @@ def _pkg_version(pkg_name: str) -> str:
         return "not-installed"
 
 
-@app.function(
-    image=image,
-    gpu=GPU_CONFIG,
-    timeout=TIMEOUT_SEC,
-    volumes={str(CHECKPOINT_ROOT): checkpoint_volume},
-    secrets=_secrets,
-    retries=modal.Retries(initial_delay=0.0, max_retries=MAX_RETRIES),
-    max_inputs=1,
-)
-def run_training(
-    config: str,
+def build_command(
+    *,
+    config_path: Path,
     model: str,
     train_files: str,
     val_files: str,
-    dataset_preset: str,
     run_name: str,
-    total_epochs: int = 3,
-    n_gpus_per_node: int = 1,
-    extra_overrides: str = "",
-) -> str:
-    validate_runtime_stack()
-
-    if not run_name:
-        raise ValueError("run_name is required")
-
-    config_path = (REMOTE_ROOT / config).resolve()
-    if not config_path.exists():
-        raise FileNotFoundError(f"Composer config not found: {config_path}")
-
-    checkpoint_dir = CHECKPOINT_ROOT / run_name
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    train_files, val_files = _prepare_dataset(train_files, val_files, dataset_preset)
-
+    total_epochs: int,
+    n_gpus_per_node: int,
+    extra_overrides: str,
+) -> list[str]:
     overrides = _composer_yaml_to_overrides(config_path)
     extra_override_items = shlex.split(extra_overrides) if extra_overrides.strip() else []
     existing_keys = _extract_override_keys(overrides + extra_override_items)
+
+    checkpoint_dir = CHECKPOINT_ROOT / run_name
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
     overrides.extend(
         [
             f"++data.train_files={_hydra_literal(train_files)}",
@@ -306,14 +212,12 @@ def run_training(
             f"++trainer.default_local_dir={_hydra_literal(str(checkpoint_dir))}",
             f"++trainer.total_epochs={total_epochs}",
             "++trainer.save_freq=1",
-            "++trainer.project_name=grpo_composer_modal",
+            "++trainer.project_name=grpo_composer_local",
             f"++trainer.experiment_name={_hydra_literal(run_name)}",
             "++trainer.resume_mode=disable",
         ]
     )
 
-    # veRL requires explicit micro-batch fields when dynamic batch sizing is off.
-    # Add conservative defaults unless user/config already set them.
     if not _has_any(
         existing_keys,
         "actor_rollout_ref.actor.ppo_micro_batch_size",
@@ -344,6 +248,7 @@ def run_training(
         "critic.ppo_micro_batch_size_per_gpu",
     ):
         overrides.append("++critic.ppo_micro_batch_size_per_gpu=8")
+
     if "actor_rollout_ref.rollout.tensor_model_parallel_size" not in existing_keys:
         overrides.append(f"++actor_rollout_ref.rollout.tensor_model_parallel_size={max(1, n_gpus_per_node)}")
     if "actor_rollout_ref.rollout.name" not in existing_keys:
@@ -356,19 +261,15 @@ def run_training(
         overrides.append("++actor_rollout_ref.rollout.enable_chunked_prefill=false")
     if "actor_rollout_ref.rollout.load_format" not in existing_keys:
         overrides.append("++actor_rollout_ref.rollout.load_format=auto")
-    # Register grpo_composer losses/advantages in FSDP worker processes.
-    # veRL's external_lib calls importlib.import_module() in every worker.
     if "actor_rollout_ref.model.external_lib" not in existing_keys:
-        overrides.append('++actor_rollout_ref.model.external_lib=grpo_composer.integrations.verl')
-    # Limit max sequence length to avoid OOM in vLLM V1 EngineCore subprocess.
-    # Default 32768 (Qwen2.5) exhausts KV cache with shared GPU memory.
+        overrides.append("++actor_rollout_ref.model.external_lib=grpo_composer.integrations.verl")
     if "actor_rollout_ref.rollout.max_model_len" not in existing_keys:
         overrides.append("++actor_rollout_ref.rollout.max_model_len=2048")
-    # On single-GPU setups (FSDP + vLLM share the same GPU), limit vLLM memory
     if "actor_rollout_ref.rollout.gpu_memory_utilization" not in existing_keys and n_gpus_per_node <= 2:
         overrides.append("++actor_rollout_ref.rollout.gpu_memory_utilization=0.5")
     if "trainer.logger" not in existing_keys:
         overrides.append(f"++trainer.logger={_hydra_literal(['console'])}")
+
     if not _has_any(
         existing_keys,
         "actor_rollout_ref.model.override_config._attn_implementation",
@@ -395,7 +296,46 @@ def run_training(
     for warning in warnings:
         print(f"[sanity-warning] {warning}")
 
-    command = ["python", "scripts/train_grpo.py", *overrides]
+    return ["python", "scripts/train_grpo.py", *overrides]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Local single-node launcher for grpo_composer")
+    parser.add_argument("--config", default="configs/base_grpo.yaml")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--train-files", default="")
+    parser.add_argument("--val-files", default="")
+    parser.add_argument("--dataset-preset", default="gsm8k")
+    parser.add_argument("--run-name", default="grpo_local_run")
+    parser.add_argument("--total-epochs", type=int, default=1)
+    parser.add_argument("--n-gpus-per-node", type=int, default=1)
+    parser.add_argument("--extra-overrides", default="")
+    return parser.parse_args()
+
+
+def main() -> None:
+    validate_runtime_stack()
+
+    args = parse_args()
+    print(f"Canonical runtime stack: {runtime_summary_text()}")
+
+    config_path = (REPO_ROOT / args.config).resolve()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Composer config not found: {config_path}")
+
+    train_files, val_files = _prepare_dataset(args.train_files, args.val_files, args.dataset_preset)
+
+    command = build_command(
+        config_path=config_path,
+        model=args.model,
+        train_files=train_files,
+        val_files=val_files,
+        run_name=args.run_name,
+        total_epochs=args.total_epochs,
+        n_gpus_per_node=args.n_gpus_per_node,
+        extra_overrides=args.extra_overrides,
+    )
+
     print(
         "Runtime versions:",
         {
@@ -412,60 +352,17 @@ def run_training(
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
-    # Suppress verbose config dumps and Ray noise — show only errors + progress
     env.setdefault("VERL_LOG_LEVEL", "WARNING")
     env.setdefault("RAY_DEDUP_LOGS", "1")
     env.setdefault("RAY_IGNORE_UNHANDLED_ERRORS", "1")
     env.setdefault("NCCL_DEBUG", "WARN")
     env.setdefault("VLLM_LOGGING_LEVEL", "ERROR")
+
     existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{REMOTE_ROOT}:{existing_pythonpath}" if existing_pythonpath else str(REMOTE_ROOT)
-    )
+    env["PYTHONPATH"] = f"{REPO_ROOT}:{existing_pythonpath}" if existing_pythonpath else str(REPO_ROOT)
 
-    subprocess.run(
-        command,
-        cwd=str(REMOTE_ROOT),
-        env=env,
-        check=True,
-    )
-    return str(checkpoint_dir)
+    subprocess.run(command, cwd=str(REPO_ROOT), env=env, check=True)
 
 
-@app.local_entrypoint()
-def main(
-    config: str = "configs/base_grpo.yaml",
-    model: str = "Qwen/Qwen2.5-0.5B-Instruct",
-    train_files: str = "",
-    val_files: str = "",
-    dataset_preset: str = "gsm8k",
-    run_name: str = "grpo_modal_run",
-    total_epochs: int = 3,
-    n_gpus_per_node: int = 1,
-    extra_overrides: str = "",
-) -> None:
-    print(f"Modal app: {APP_NAME}")
-    print(f"Canonical runtime stack: {runtime_summary_text()}")
-    print(f"GPU config: {GPU_CONFIG}")
-    print(f"Checkpoint volume: {CHECKPOINT_VOLUME_NAME}")
-    if train_files and val_files:
-        print(f"Dataset mode: explicit files ({train_files}, {val_files})")
-    else:
-        print(f"Dataset mode: preset={dataset_preset} (auto-prepared in container)")
-    if _secrets:
-        print(f"Attached secrets: {len(_secrets)}")
-    else:
-        print("Attached secrets: none")
-
-    checkpoint_path = run_training.remote(
-        config=config,
-        model=model,
-        train_files=train_files,
-        val_files=val_files,
-        dataset_preset=dataset_preset,
-        run_name=run_name,
-        total_epochs=total_epochs,
-        n_gpus_per_node=n_gpus_per_node,
-        extra_overrides=extra_overrides,
-    )
-    print(f"Training finished. Checkpoints written to: {checkpoint_path}")
+if __name__ == "__main__":
+    main()
