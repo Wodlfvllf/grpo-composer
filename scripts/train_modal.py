@@ -40,12 +40,29 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 import modal
 import yaml
+
+# Modal may execute this file from /root/train_modal.py while the repository is
+# mounted at /root/grpo_composer (or baked elsewhere by legacy image builder).
+# Ensure repository roots are present on sys.path before local package imports.
+_SCRIPT_PATH = Path(__file__).resolve()
+_REPO_PATH_CANDIDATES = [
+    _SCRIPT_PATH.parents[1],                # normal local layout: repo/scripts/train_modal.py
+    _SCRIPT_PATH.parent / "grpo_composer",  # modal copied script at /root/train_modal.py
+    Path("/root/grpo_composer"),            # explicit modal mount path used in this script
+    Path("/"),                              # legacy image-builder copy root
+]
+for _candidate in _REPO_PATH_CANDIDATES:
+    if (_candidate / "grpo_composer").exists():
+        candidate_str = str(_candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
 
 from grpo_composer.config.sanity import run_preflight_sanity_checks
 from grpo_composer.runtime_stack import (
@@ -150,53 +167,6 @@ def _hydra_literal(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     return json.dumps(value, separators=(",", ":"))
-
-
-def _extract_gsm8k_solution(answer: str) -> str:
-    match = re.search(r"####\s*(-?[0-9\.,]+)", answer)
-    if not match:
-        raise ValueError(f"Cannot extract GSM8K solution from answer: {answer[:120]}...")
-    return match.group(1).replace(",", "")
-
-
-def _prepare_gsm8k_dataset(output_dir: Path) -> tuple[str, str]:
-    from datasets import load_dataset
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    train_path = output_dir / "train.parquet"
-    val_path = output_dir / "test.parquet"
-
-    if train_path.exists() and val_path.exists():
-        return str(train_path), str(val_path)
-
-    dataset = load_dataset("openai/gsm8k", "main")
-    instruction = 'Let\'s think step by step and output the final answer after "####".'
-
-    def make_map_fn(split: str):
-        def process_fn(example, idx):
-            question = example["question"] + " " + instruction
-            solution = _extract_gsm8k_solution(example["answer"])
-            return {
-                "data_source": "openai/gsm8k",
-                "prompt": [{"role": "user", "content": question}],
-                "ability": "math",
-                "reward_model": {
-                    "style": "rule",
-                    "ground_truth": solution,
-                },
-                "extra_info": {
-                    "split": split,
-                    "index": idx,
-                },
-            }
-
-        return process_fn
-
-    train_dataset = dataset["train"].map(make_map_fn("train"), with_indices=True)
-    val_dataset = dataset["test"].map(make_map_fn("test"), with_indices=True)
-    train_dataset.to_parquet(str(train_path))
-    val_dataset.to_parquet(str(val_path))
-    return str(train_path), str(val_path)
 
 
 def _prepare_dataset(train_files: str, val_files: str, dataset_preset: str) -> tuple[str, str]:
