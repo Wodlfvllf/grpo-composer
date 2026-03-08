@@ -37,13 +37,58 @@ from grpo_composer.core.regularizers.mutual_information import MutualInformation
 from grpo_composer.core.regularizers.preference import PreferenceRegularizer
 
 
+# Module-level composer config: stores keys like clip_mode, agg_mode, regularizer
+# that can't live in FSDPActorConfig (strict dataclass rejects unknown fields).
+# Set by ComposerRayPPOTrainer._inject_composer_config() in the TaskRunner,
+# or lazily resolved from Hydra's global config in FSDP worker processes.
+_COMPOSER_CONFIG: dict[str, Any] = {}
+_COMPOSER_CONFIG_LOADED: bool = False
+
+
+def set_composer_config(config_dict: dict[str, Any]) -> None:
+    """Store composer config globally so the loss function can read it."""
+    global _COMPOSER_CONFIG, _COMPOSER_CONFIG_LOADED
+    _COMPOSER_CONFIG = dict(config_dict)
+    _COMPOSER_CONFIG_LOADED = True
+
+
+def _ensure_composer_config() -> None:
+    """Lazily load composer config from env var (for FSDP worker processes).
+
+    The env var GRPO_COMPOSER_CONFIG is set by ComposerRayPPOTrainer in the
+    TaskRunner. Ray workers inherit it, so FSDP workers can read it here.
+    """
+    global _COMPOSER_CONFIG, _COMPOSER_CONFIG_LOADED
+    if _COMPOSER_CONFIG_LOADED:
+        return
+    _COMPOSER_CONFIG_LOADED = True  # only try once
+    try:
+        import json
+        import os
+
+        env_val = os.environ.get("GRPO_COMPOSER_CONFIG")
+        if env_val:
+            _COMPOSER_CONFIG = json.loads(env_val)
+    except Exception:
+        pass
+
+
 def _config_get(config: Optional[ActorConfig], key: str, default):
-    if config is None:
-        return default
-    getter = getattr(config, "get", None)
-    if callable(getter):
-        return getter(key, default)
-    return getattr(config, key, default)
+    # 1. Try the ActorConfig / FSDPActorConfig first
+    if config is not None:
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            val = getter(key, None)
+            if val is not None:
+                return val
+        val = getattr(config, key, None)
+        if val is not None:
+            return val
+    # 2. Fallback to module-level composer config
+    _ensure_composer_config()
+    if key in _COMPOSER_CONFIG:
+        return _COMPOSER_CONFIG[key]
+    return default
 
 
 def _config_get_context(config: Optional[ActorConfig], key: str, default=None):
@@ -417,6 +462,25 @@ def compute_composer_loss(
     rollout_is_weights: torch.Tensor | None = None,
     **kwargs,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Composer policy loss — dispatches to registered clip / agg / reg components.
+
+    Tensor shapes (all from veRL's FSDP worker):
+        old_log_prob:   (B, T)  — log π_θ_old per token, from vLLM rollout
+        log_prob:       (B, T)  — log π_θ per token, recomputed in actor forward
+        advantages:     (B, T)  — per-token advantage (same A_i broadcast to all tokens of output i)
+        response_mask:  (B, T)  — 1 for real response tokens, 0 for padding
+
+    where B = total outputs across all prompts (B = num_prompts × G), flattened.
+          T = max response length in this micro-batch (right-padded).
+
+    Shape flow:
+        ratio:          (B, T)  — π_θ / π_θ_old per token
+        clipped_ratio:  (B, T)  — clip(ratio, 1-ε, 1+ε) per token
+        pg_losses:      (B, T)  — max(-A·ρ, -A·clip(ρ)) per token
+        pg_loss:        scalar  — aggregated (e.g. token_mean: mean over valid tokens)
+        reg_term:       scalar  — regularization penalty
+        final loss:     scalar  — pg_loss + β · reg_term
+    """
     if config is None:
         raise ValueError("composer policy loss requires actor config")
 
@@ -434,13 +498,17 @@ def compute_composer_loss(
     use_dual_clip = bool(_config_get(config, "use_dual_clip", False))
     clip_ratio_c = float(_config_get(config, "clip_ratio_c", 3.0))
 
+    # (B, T) — clamped log-ratio for numerical stability
     negative_approx_kl = torch.clamp(log_prob - old_log_prob, min=-20.0, max=20.0)
+    # (B, T) — importance sampling ratio ρ_{i,t} = π_θ / π_θ_old
     ratio = torch.exp(negative_approx_kl)
+    # scalar — monitoring metric only, NOT added to loss
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
 
     clip_fn = CLIP_REGISTRY.get(clip_mode)
     if clip_fn is None:
         raise ValueError(f"Unknown clip_mode: {clip_mode}. Options: {list(CLIP_REGISTRY.keys())}")
+    # (B, T) — clipped ratio, e.g. symmetric → clamp(ratio, 1-ε, 1+ε)
     clipped_ratio = clip_fn(
         ratio,
         old_log_prob,
@@ -450,9 +518,10 @@ def compute_composer_loss(
         **kwargs,
     )
 
-    pg_losses1 = -advantages * ratio
-    pg_losses2 = -advantages * clipped_ratio
-    pg_losses = torch.maximum(pg_losses1, pg_losses2)
+    # (B, T) — PPO surrogate losses (negative because we maximize objective)
+    pg_losses1 = -advantages * ratio             # unclipped: -A_i · ρ_{i,t}
+    pg_losses2 = -advantages * clipped_ratio      # clipped:   -A_i · clip(ρ_{i,t})
+    pg_losses = torch.maximum(pg_losses1, pg_losses2)  # pessimistic bound
 
     if use_dual_clip:
         pg_losses3 = -advantages * clip_ratio_c
@@ -472,6 +541,7 @@ def compute_composer_loss(
             rollout_is_weights = rollout_is_weights.unsqueeze(-1)
         pg_losses = pg_losses * rollout_is_weights
 
+    # (B,) or None — sequence-level reward for agg/reg that need it
     sequence_rewards = _infer_sequence_rewards(response_mask, kwargs, config)
 
     runtime_context = dict(kwargs)
@@ -479,6 +549,7 @@ def compute_composer_loss(
     if sequence_rewards is not None:
         runtime_context["sequence_rewards"] = sequence_rewards
 
+    # scalar — aggregated loss: (B, T) → scalar via token_mean, token_sum, etc.
     if agg_mode in AGG_REGISTRY:
         pg_loss = AGG_REGISTRY[agg_mode](pg_losses, response_mask, config, **runtime_context)
     elif agg_mode in VERL_AGG_MODES:
@@ -494,12 +565,14 @@ def compute_composer_loss(
             f"Options: {list(AGG_REGISTRY.keys()) + list(VERL_AGG_MODES.keys())}"
         )
 
+    # scalar — regularization term (e.g. KL divergence)
     reg_term_value = torch.tensor(0.0, device=log_prob.device)
     if reg_name != "none" and reg_coef > 0:
         reg_fn = REG_REGISTRY.get(reg_name)
         if reg_fn is None:
             raise ValueError(f"Unknown regularizer: {reg_name}. Options: {list(REG_REGISTRY.keys())}")
         reg_term_value = reg_fn(log_prob, old_log_prob, response_mask, config, **runtime_context)
+        # scalar — final loss = pg_loss + β · reg_term
         pg_loss = pg_loss + reg_coef * reg_term_value
 
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
