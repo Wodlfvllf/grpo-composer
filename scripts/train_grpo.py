@@ -31,19 +31,50 @@ if str(REPO_ROOT) not in sys.path:
 # ────────────────────────────────────────────────────
 # This single import triggers all @register_adv_est and @register_policy_loss
 # decorators, making our custom components available to veRL.
-# NOTE: The collective_rpc patch for vLLM 0.11.2 is applied at image build
-#       time via scripts/patch_verl_collective_rpc.py (not here, since Ray
-#       workers are separate processes).
 
 import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
 from grpo_composer.integrations.verl import patch_verl_main_ppo
 
 
 # ────────────────────────────────────────────────────
-# Step 2: Launch veRL's GRPO training loop
+# Step 2: Custom TaskRunner that re-patches inside
+#         the Ray actor process (Process 3)
 # ────────────────────────────────────────────────────
+# Ray spawns TaskRunner as a separate process. Monkey-patches
+# from the main process (Process 2) don't carry over. This
+# subclass re-applies them so ComposerRayPPOTrainer and custom
+# advantage estimators are available inside the Ray actor.
 
 patch_verl_main_ppo()
+
+import ray
+import verl.trainer.main_ppo as _main_ppo
+from verl.trainer.main_ppo import TaskRunner
+
+
+class ComposerTaskRunner(TaskRunner):
+    """TaskRunner that ensures grpo_composer patches are applied in this process."""
+
+    def run(self, config):
+        # Re-apply patches inside the Ray actor process
+        import grpo_composer.integrations.verl  # noqa: F401
+        from grpo_composer.integrations.verl import patch_verl_main_ppo
+        patch_verl_main_ppo()
+        return super().run(config)
+
+
+# Monkey-patch run_ppo so veRL's main() uses our ComposerTaskRunner
+_original_run_ppo = _main_ppo.run_ppo
+
+
+def _composer_run_ppo(config, task_runner_class=None):
+    if task_runner_class is None:
+        task_runner_class = ray.remote(num_cpus=1)(ComposerTaskRunner)
+    return _original_run_ppo(config, task_runner_class=task_runner_class)
+
+
+_main_ppo.run_ppo = _composer_run_ppo
+
 from verl.trainer.main_ppo import main
 
 
@@ -53,10 +84,12 @@ if __name__ == "__main__":
     print("=" * 60)
     print()
     print("  Advantages:  difficulty_aware, length_corrected, kalman,")
-    print("               decoupled, multi_scale, static_value, novelty_sharp")
+    print("               decoupled, multi_scale, static_value, novelty_sharp,")
+    print("               unbiased_grpo")
     print("  Loss:        composer (clip_mode × agg_mode × regularizer)")
     print("  Trainer:     ComposerRayPPOTrainer (patched over RayPPOTrainer)")
     print()
     print("=" * 60)
 
     main()
+
