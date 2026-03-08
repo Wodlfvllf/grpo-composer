@@ -71,6 +71,17 @@ from grpo_composer.runtime_stack import (
     validate_runtime_stack,
 )
 
+# prepare_dataset.py lives alongside train_modal.py in scripts/
+_scripts_dir = str(Path(__file__).resolve().parent)
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+# In Modal container, files are copied to /root/grpo_composer/scripts/
+_remote_scripts = "/root/grpo_composer/scripts"
+if _remote_scripts not in sys.path:
+    sys.path.insert(0, _remote_scripts)
+
+from prepare_dataset import _prepare_gsm8k_dataset, _prepare_light_eval_maths_dataset
+
 
 APP_NAME = "grpo-composer-train"
 REMOTE_ROOT = Path("/root/grpo_composer")
@@ -178,7 +189,9 @@ def _prepare_dataset(train_files: str, val_files: str, dataset_preset: str) -> t
     preset = dataset_preset.strip().lower()
     if preset == "gsm8k":
         return _prepare_gsm8k_dataset(DATA_ROOT / "gsm8k")
-    raise ValueError(f"Unsupported dataset_preset='{dataset_preset}'. Supported: gsm8k.")
+    if preset in ("math", "math-hard", "lighteval"):
+        return _prepare_light_eval_maths_dataset(DATA_ROOT / "lighteval_math")
+    raise ValueError(f"Unsupported dataset_preset='{dataset_preset}'. Supported: gsm8k, math.")
 
 
 def _composer_yaml_to_overrides(config_path: Path) -> list[str]:
