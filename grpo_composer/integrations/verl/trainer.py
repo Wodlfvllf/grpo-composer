@@ -457,6 +457,11 @@ def composer_compute_advantage(
             f"Original import error: {_VERL_IMPORT_ERROR!r}"
         )
 
+    # Ensure custom advantage estimators are registered in this process
+    # (TaskRunner is a separate Ray actor where train_grpo.py's top-level
+    # import hasn't run).
+    import grpo_composer.integrations.verl.advantages  # noqa: F401
+
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = ray_trainer_module.compute_response_mask(data)
 
@@ -622,44 +627,39 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         self._validate_supported_modes()
 
     def _inject_composer_config(self) -> None:
-        """Inject top-level ``composer:`` keys into the actor OmegaConf config.
+        """Store ``composer:`` YAML keys in a module-level global.
 
-        veRL validates ``actor_rollout_ref.actor`` as ``FSDPActorConfig`` at startup,
-        rejecting unknown keys. Our composer-specific keys (clip_mode, agg_mode,
-        regularizer, etc.) live under a top-level ``composer:`` namespace in the YAML.
-        After validation passes, we merge them into the actor's OmegaConf dict so the
-        loss function can read them via ``_config_get(config, 'clip_mode', ...)``.
+        veRL validates ``actor_rollout_ref.actor`` as ``FSDPActorConfig`` at
+        startup, rejecting unknown keys.  We cannot merge composer-specific
+        keys (clip_mode, agg_mode, regularizer, …) into the actor OmegaConf
+        tree — doing so would break the dataclass conversion in FSDP workers.
+
+        Instead we store them in ``losses._COMPOSER_CONFIG``, which the loss
+        function reads via ``_config_get(config, key, default)``'s fallback.
         """
         composer_cfg = _cfg_get(self.config, "composer", None)
         if composer_cfg is None:
             return
 
-        # Get the actor config sub-tree (OmegaConf DictConfig at this point)
-        actor_rollout_ref = _cfg_get(self.config, "actor_rollout_ref", None)
-        actor_cfg = _cfg_get(actor_rollout_ref, "actor", None)
-        if actor_cfg is None:
-            return
+        from grpo_composer.integrations.verl.losses import set_composer_config
 
-        # Merge composer keys into actor config so loss/advantage functions can find them
         try:
             from omegaconf import OmegaConf
 
-            if OmegaConf.is_config(actor_cfg):
-                OmegaConf.set_struct(actor_cfg, False)
-                if OmegaConf.is_config(composer_cfg):
-                    for key in composer_cfg:
-                        actor_cfg[key] = composer_cfg[key]
-                else:
-                    for key, value in (composer_cfg if isinstance(composer_cfg, dict) else {}).items():
-                        actor_cfg[key] = value
-                OmegaConf.set_struct(actor_cfg, True)
+            if OmegaConf.is_config(composer_cfg):
+                config_dict = OmegaConf.to_container(composer_cfg, resolve=True)
             else:
-                # Plain dict fallback
-                if isinstance(actor_cfg, dict) and isinstance(composer_cfg, dict):
-                    actor_cfg.update(composer_cfg)
+                config_dict = dict(composer_cfg) if not isinstance(composer_cfg, dict) else composer_cfg
         except ImportError:
-            if isinstance(actor_cfg, dict) and isinstance(composer_cfg, dict):
-                actor_cfg.update(composer_cfg)
+            config_dict = dict(composer_cfg) if not isinstance(composer_cfg, dict) else composer_cfg
+
+        set_composer_config(config_dict)
+
+        # Also export as env var so FSDP workers (child processes) can read it.
+        # Ray workers inherit env vars from the parent process.
+        import json
+        import os
+        os.environ["GRPO_COMPOSER_CONFIG"] = json.dumps(config_dict)
 
     def _build_flow_plugins(self) -> list[FlowPlugin]:
         flow_names = _parse_flow_list(self.config)
