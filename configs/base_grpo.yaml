@@ -19,3 +19,4 @@ composer:
   agg_mode: "token_mean"           # (1/G) Σ_i (1/|o_i|) Σ_t
   regularizer: "kl"               # Standard forward KL
   reg_coef: 0.01                   # β = 0.01
+

@@ -9,7 +9,7 @@
 #   4. Keeps symmetric clipping
 
 algorithm:
-  adv_estimator: grpo
+  adv_estimator: unbiased_grpo
   norm_adv_by_std_in_grpo: false
 actor_rollout_ref:
   actor:
