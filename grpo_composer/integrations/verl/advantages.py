@@ -6,7 +6,7 @@ shape conversions between veRL batch tensors and grpo_composer core APIs.
 """
 
 from collections import defaultdict
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
@@ -54,10 +54,10 @@ def _validate_inputs(token_level_rewards: torch.Tensor, response_mask: torch.Ten
         )
 
 
-def _collect_group_indices(index: np.ndarray, batch_size: int) -> dict[int, list[int]]:
-    group_indices: dict[int, list[int]] = defaultdict(list)
+def _collect_group_indices(index: np.ndarray, batch_size: int) -> dict[Any, list[int]]:
+    group_indices: dict[Any, list[int]] = defaultdict(list)
     for i in range(batch_size):
-        group_indices[int(index[i])].append(i)
+        group_indices[index[i]].append(i)
     return group_indices
 
 
