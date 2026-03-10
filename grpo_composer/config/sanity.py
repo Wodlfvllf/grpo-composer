@@ -246,12 +246,24 @@ def run_preflight_sanity_checks(
         )
 
     regularizer = _get_nested(effective, "composer.regularizer")
+    reward_pipeline = _normalize_string_list(_get_nested(effective, "composer.reward_pipeline", []))
     algorithm_flow = _get_nested(effective, "algorithm.composer_flow")
     composer_flow = _get_nested(effective, "composer.composer_flow")
     if composer_flow and not algorithm_flow:
         warnings.append(
             "composer.composer_flow is set but algorithm.composer_flow is not. Current trainer reads flow from "
             "algorithm.* keys."
+        )
+
+    rollout_n = _get_nested(effective, "actor_rollout_ref.rollout.n", 1)
+    if isinstance(rollout_n, bool):
+        rollout_n = int(rollout_n)
+    if not isinstance(rollout_n, (int, float)):
+        errors.append("actor_rollout_ref.rollout.n must be numeric when set.")
+    elif "diversity_adjusted" in reward_pipeline and int(rollout_n) <= 1:
+        errors.append(
+            "composer.reward_pipeline includes 'diversity_adjusted' but actor_rollout_ref.rollout.n <= 1. "
+            "Set actor_rollout_ref.rollout.n > 1 (recommended: 8) so DRA can compute pairwise similarity."
         )
 
     if regularizer == "mutual_info" or algorithm_flow == "info_grpo":
