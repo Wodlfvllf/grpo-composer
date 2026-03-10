@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
-
+import os
 import verl.utils.torch_functional as verl_F
 from verl.trainer.ppo.core_algos import agg_loss, register_policy_loss
 from verl.workers.config import ActorConfig
@@ -46,35 +46,50 @@ _COMPOSER_CONFIG_LOADED: bool = False
 
 
 def set_composer_config(config_dict: dict[str, Any]) -> None:
-    """Store composer config globally so the loss function can read it."""
+    """Store composer config globally in the current worker process."""
     global _COMPOSER_CONFIG, _COMPOSER_CONFIG_LOADED
-    _COMPOSER_CONFIG = dict(config_dict)
+    _COMPOSER_CONFIG = dict(config_dict or {})
     _COMPOSER_CONFIG_LOADED = True
 
 
-def _ensure_composer_config() -> None:
-    """Lazily load composer config from env var (for FSDP worker processes).
-
-    The env var GRPO_COMPOSER_CONFIG is set by ComposerRayPPOTrainer in the
-    TaskRunner. Ray workers inherit it, so FSDP workers can read it here.
-    """
+def _ensure_composer_config_loaded() -> None:
+    """Best-effort env fallback for worker processes that inherit runtime env."""
     global _COMPOSER_CONFIG, _COMPOSER_CONFIG_LOADED
     if _COMPOSER_CONFIG_LOADED:
         return
-    _COMPOSER_CONFIG_LOADED = True  # only try once
+
+    _COMPOSER_CONFIG_LOADED = True
+    raw = os.environ.get("GRPO_COMPOSER_CONFIG")
+    if not raw:
+        return
     try:
         import json
-        import os
 
-        env_val = os.environ.get("GRPO_COMPOSER_CONFIG")
-        if env_val:
-            _COMPOSER_CONFIG = json.loads(env_val)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            _COMPOSER_CONFIG = parsed
     except Exception:
         pass
 
 
-def _config_get(config: Optional[ActorConfig], key: str, default):
-    # 1. Try the ActorConfig / FSDPActorConfig first
+def get_composer_config() -> dict[str, Any]:
+    _ensure_composer_config_loaded()
+    return dict(_COMPOSER_CONFIG)
+
+
+def _config_get(
+    config: Optional[ActorConfig], key: str, default, composer_dict: Optional[dict[str, Any]] = None
+):
+    # 1) Explicit composer dict (strongest signal for custom loss settings)
+    if isinstance(composer_dict, dict) and key in composer_dict and composer_dict[key] is not None:
+        return composer_dict[key]
+
+    # 2) Module-level composer config (set in-worker or loaded from env)
+    _ensure_composer_config_loaded()
+    if key in _COMPOSER_CONFIG and _COMPOSER_CONFIG[key] is not None:
+        return _COMPOSER_CONFIG[key]
+
+    # 3) ActorConfig / FSDPActorConfig (veRL-native keys)
     if config is not None:
         getter = getattr(config, "get", None)
         if callable(getter):
@@ -84,15 +99,14 @@ def _config_get(config: Optional[ActorConfig], key: str, default):
         val = getattr(config, key, None)
         if val is not None:
             return val
-    # 2. Fallback to module-level composer config
-    _ensure_composer_config()
-    if key in _COMPOSER_CONFIG:
-        return _COMPOSER_CONFIG[key]
+
     return default
 
 
-def _config_get_context(config: Optional[ActorConfig], key: str, default=None):
-    return _config_get(config, key, default)
+def _config_get_context(
+    config: Optional[ActorConfig], key: str, default=None, composer_dict: Optional[dict[str, Any]] = None
+):
+    return _config_get(config, key, default, composer_dict)
 
 
 def _validate_tensor_shape(
@@ -491,12 +505,30 @@ def compute_composer_loss(
     if response_mask.shape != log_prob.shape:
         raise ValueError(f"response_mask/log_prob shape mismatch: {response_mask.shape} vs {log_prob.shape}")
 
-    clip_mode = _config_get(config, "clip_mode", "symmetric")
-    agg_mode = _config_get(config, "agg_mode", "token_mean")
-    reg_name = _config_get(config, "regularizer", "none")
-    reg_coef = float(_config_get(config, "reg_coef", 0.0))
-    use_dual_clip = bool(_config_get(config, "use_dual_clip", False))
-    clip_ratio_c = float(_config_get(config, "clip_ratio_c", 3.0))
+    composer_dict = kwargs.get("composer_config")
+    if not isinstance(composer_dict, dict) or not composer_dict:
+        composer_dict = get_composer_config()
+
+    # Fail fast: composer loss must run with explicit composer settings.
+    if not isinstance(composer_dict, dict) or not composer_dict:
+        raise RuntimeError(
+            "Composer loss is active, but worker has no composer config. "
+            "Expected trainer to inject batch.meta_info['composer_config'] and "
+            "worker update_policy patch to bind it via set_composer_config(...)."
+        )
+
+    # Keep the active per-batch config visible to nested clip/agg/reg helpers.
+    set_composer_config(composer_dict)
+
+    clip_mode = _config_get(config, "clip_mode", "symmetric", composer_dict)
+    agg_mode = _config_get(config, "agg_mode", "token_mean", composer_dict)
+    reg_name = _config_get(config, "regularizer", "none", composer_dict)
+    reg_coef = float(_config_get(config, "reg_coef", 0.0, composer_dict))
+    use_dual_clip = bool(_config_get(config, "use_dual_clip", False, composer_dict))
+    clip_ratio_c = float(_config_get(config, "clip_ratio_c", 3.0, composer_dict))
+
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(f"🔥 [DEBUG] Loss Compute | Clip: {clip_mode} | Agg: {agg_mode} | Reg: {reg_name}")
 
     # (B, T) — clamped log-ratio for numerical stability
     negative_approx_kl = torch.clamp(log_prob - old_log_prob, min=-20.0, max=20.0)
@@ -548,6 +580,7 @@ def compute_composer_loss(
     runtime_context["log_prob"] = log_prob
     if sequence_rewards is not None:
         runtime_context["sequence_rewards"] = sequence_rewards
+    runtime_context["composer_config"] = composer_dict
 
     # scalar — aggregated loss: (B, T) → scalar via token_mean, token_sum, etc.
     if agg_mode in AGG_REGISTRY:
@@ -557,7 +590,7 @@ def compute_composer_loss(
             loss_mat=pg_losses,
             loss_mask=response_mask,
             loss_agg_mode=VERL_AGG_MODES[agg_mode],
-            **config.global_batch_info,
+            **getattr(config, "global_batch_info", {}),
         )
     else:
         raise ValueError(
@@ -571,7 +604,8 @@ def compute_composer_loss(
         reg_fn = REG_REGISTRY.get(reg_name)
         if reg_fn is None:
             raise ValueError(f"Unknown regularizer: {reg_name}. Options: {list(REG_REGISTRY.keys())}")
-        reg_term_value = reg_fn(log_prob, old_log_prob, response_mask, config, **runtime_context)
+        reg_kwargs = {k: v for k, v in runtime_context.items() if k not in ("log_prob", "old_log_prob", "response_mask", "config")}
+        reg_term_value = reg_fn(log_prob, old_log_prob, response_mask, config, **reg_kwargs)
         # scalar — final loss = pg_loss + β · reg_term
         pg_loss = pg_loss + reg_coef * reg_term_value
 
