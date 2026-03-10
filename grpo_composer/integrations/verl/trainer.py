@@ -12,6 +12,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import os
+import json
+from collections.abc import Mapping
 import numpy as np
 import torch
 
@@ -28,11 +31,13 @@ try:
     from verl.trainer.ppo.core_algos import AdvantageEstimator
     import verl.trainer.ppo.ray_trainer as ray_trainer_module
     from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
 except Exception as exc:  # pragma: no cover - exercised when verl is absent
     _VERL_IMPORT_ERROR = exc
     core_algos = None
     AdvantageEstimator = None
     ray_trainer_module = None
+    DataParallelPPOActor = None
 
     class RayPPOTrainer:  # type: ignore[override]
         """Fallback stub so this module can be imported without verl installed."""
@@ -47,18 +52,31 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
 _ORIGINAL_COMPUTE_ADVANTAGE = None
 _ORIGINAL_RAY_TRAINER_CLASS = None
 _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
+_ORIGINAL_DP_ACTOR_UPDATE_POLICY = None
 
 
 def _cfg_get(config: Any, key: str, default=None):
-    if config is None:
-        return default
-    getter = getattr(config, "get", None)
-    if callable(getter):
-        try:
-            return getter(key, default)
-        except TypeError:
-            pass
-    return getattr(config, key, default)
+    from grpo_composer.integrations.verl.losses import _COMPOSER_CONFIG
+
+    val = None
+    if config is not None:
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            try:
+                val = getter(key, None)
+            except TypeError:
+                pass
+        if val is None:
+            val = getattr(config, key, None)
+
+    if val is not None:
+        return val
+
+    # Fallback to globally injected composer config
+    if _COMPOSER_CONFIG is not None and key in _COMPOSER_CONFIG:
+        return _COMPOSER_CONFIG[key]
+
+    return default
 
 
 def _cfg_get_nested(config: Any, path: tuple[str, ...], default=None):
@@ -349,6 +367,55 @@ def _apply_length_dependent_reward_transform(data: Any, config: Any) -> None:
     _write_sequence_rewards_as_token_rewards(data, adjusted)
 
 
+def _apply_diversity_adjusted_reward_transform(data: Any, config: Any) -> None:
+    from grpo_composer.core.rewards.diversity_adjusted import DiversityAdjustedRewardCalculator
+
+    token_level_rewards = data.batch["token_level_rewards"]
+    response_mask = data.batch["response_mask"]
+
+    sequence_rewards = _sequence_rewards_from_token(token_level_rewards, response_mask)
+    sequence_correctness = _resolve_sequence_correctness(data, sequence_rewards)
+
+    # DRA-GRPO uses pairwise similarity of output embeddings.
+    # If the generator doesn't emit true hidden state embeddings, we approximate 
+    # similarity using a Bag-of-Words feature hash on the generated tokens.
+    embeddings = _maybe_get(data, "embeddings")
+    if embeddings is None:
+        responses = data.batch["responses"]
+        hash_bins = 4096
+        hashed = responses % hash_bins
+        
+        # Apply response mask so padding tokens don't contribute to similarity
+        pseudo_embeddings = torch.zeros((responses.shape[0], hash_bins), device=responses.device)
+        weights = response_mask.float().to(responses.device)
+        pseudo_embeddings.scatter_add_(1, hashed, weights)
+        embeddings = pseudo_embeddings
+
+    epsilon = float(_cfg_get(config, "diversity_epsilon", 1e-6))
+    adjusted = torch.zeros_like(sequence_rewards)
+    groups = _get_uid_groups(data, sequence_rewards.shape[0])
+
+    for indices in groups.values():
+        idx = torch.tensor(indices, device=sequence_rewards.device, dtype=torch.long)
+        grp_rewards = sequence_correctness[idx].unsqueeze(0)
+        grp_embeddings = embeddings[idx].unsqueeze(0).float()
+        
+        calculator = DiversityAdjustedRewardCalculator(
+            rewards=grp_rewards, 
+            embedding=grp_embeddings, 
+            epsilon=epsilon
+        )
+        grp_adjusted = calculator.compute_rewards().squeeze(0)
+        adjusted[idx] = grp_adjusted
+
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(f"🧮 [DEBUG] DRA-GRPO Diversity Penalty Applied:")
+        print(f"          Original Sequence Rewards (Mean): {sequence_correctness.mean().item():.4f}")
+        print(f"          Adjusted Sequence Rewards (Mean): {adjusted.mean().item():.4f}")
+
+    _write_sequence_rewards_as_token_rewards(data, adjusted)
+
+
 _REWARD_TRANSFORMS = {
     "unlikeliness": _apply_unlikeliness_reward_transform,
     "rank": _apply_rank_enhanced_reward_transform,
@@ -356,6 +423,7 @@ _REWARD_TRANSFORMS = {
     "posterior": _apply_posterior_reward_transform,
     "multi_reward": _apply_multi_reward_transform,
     "length_dependent": _apply_length_dependent_reward_transform,
+    "diversity_adjusted": _apply_diversity_adjusted_reward_transform,
 }
 
 
@@ -375,6 +443,10 @@ def _parse_reward_pipeline(config: Any) -> list[str]:
 
 def _apply_reward_pipeline(data: Any, config: Any) -> Any:
     pipeline = _parse_reward_pipeline(config)
+    
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(f"🛠️ [DEBUG] Loading Reward Pipeline: {pipeline}")
+        
     for transform_name in pipeline:
         transform = _REWARD_TRANSFORMS.get(transform_name)
         if transform is None:
@@ -382,6 +454,10 @@ def _apply_reward_pipeline(data: Any, config: Any) -> Any:
                 f"Unknown composer reward transform '{transform_name}'. "
                 f"Available: {sorted(_REWARD_TRANSFORMS.keys())}"
             )
+            
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"🛠️ [DEBUG] Executing Reward Transform: {transform_name}")
+            
         transform(data, config)
     return data
 
@@ -457,6 +533,9 @@ def composer_compute_advantage(
             f"Original import error: {_VERL_IMPORT_ERROR!r}"
         )
 
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print("🛠️ [DEBUG] composer_compute_advantage IS BEING CALLED SUCCESSFULLY!")
+
     # Ensure custom advantage estimators are registered in this process
     # (TaskRunner is a separate Ray actor where train_grpo.py's top-level
     # import hasn't run).
@@ -501,6 +580,7 @@ def composer_compute_advantage(
     adv_kwargs: dict[str, Any] = {
         "token_level_rewards": data.batch["token_level_rewards"],
         "response_mask": data.batch["response_mask"],
+        "index" : data.non_tensor_batch["uid"],
         "config": config,
     }
     adv_kwargs.update(_collect_adv_optional_kwargs(data))
@@ -614,6 +694,113 @@ def _parse_flow_list(config: Any) -> list[str]:
     return parsed_plugins
 
 
+def _patch_dp_actor_update_policy() -> None:
+    """Patch veRL actor worker update path to bind composer config per batch."""
+    if DataParallelPPOActor is None:
+        return
+
+    global _ORIGINAL_DP_ACTOR_UPDATE_POLICY
+    if _ORIGINAL_DP_ACTOR_UPDATE_POLICY is not None:
+        return
+
+    _ORIGINAL_DP_ACTOR_UPDATE_POLICY = DataParallelPPOActor.update_policy
+
+    def _composer_update_policy(self, data):  # type: ignore[override]
+        try:
+            from grpo_composer.integrations.verl.losses import set_composer_config
+
+            meta_info = getattr(data, "meta_info", None)
+            composer_cfg = None
+            if isinstance(meta_info, dict):
+                composer_cfg = meta_info.get("composer_config")
+            else:
+                getter = getattr(meta_info, "get", None)
+                if callable(getter):
+                    composer_cfg = getter("composer_config", None)
+
+            if isinstance(composer_cfg, Mapping):
+                composer_cfg = dict(composer_cfg)
+            elif composer_cfg is None:
+                composer_cfg_json = None
+                if isinstance(meta_info, dict):
+                    composer_cfg_json = meta_info.get("composer_config_json")
+                else:
+                    getter = getattr(meta_info, "get", None)
+                    if callable(getter):
+                        composer_cfg_json = getter("composer_config_json", None)
+
+                if isinstance(composer_cfg_json, str) and composer_cfg_json:
+                    try:
+                        parsed = json.loads(composer_cfg_json)
+                        if isinstance(parsed, dict):
+                            composer_cfg = parsed
+                    except Exception:
+                        composer_cfg = None
+
+            if composer_cfg is None:
+                # Reconstruct from primitive meta_info keys if present.
+                primitive_cfg = {}
+                lookup_keys = ("clip_mode", "agg_mode", "regularizer", "reg_coef")
+                if isinstance(meta_info, dict):
+                    for k in lookup_keys:
+                        meta_key = f"composer_{k}"
+                        if meta_key in meta_info and meta_info[meta_key] is not None:
+                            primitive_cfg[k] = meta_info[meta_key]
+                else:
+                    getter = getattr(meta_info, "get", None)
+                    if callable(getter):
+                        for k in lookup_keys:
+                            meta_key = f"composer_{k}"
+                            v = getter(meta_key, None)
+                            if v is not None:
+                                primitive_cfg[k] = v
+                if primitive_cfg:
+                    composer_cfg = primitive_cfg
+
+            if composer_cfg is None:
+                # Last-resort env fallback for worker processes.
+                raw = os.environ.get("GRPO_COMPOSER_CONFIG")
+                if raw:
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            composer_cfg = parsed
+                    except Exception:
+                        pass
+
+            if isinstance(composer_cfg, dict) and composer_cfg:
+                set_composer_config(composer_cfg)
+                if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                    agg = composer_cfg.get("agg_mode", "<missing>")
+                    clip = composer_cfg.get("clip_mode", "<missing>")
+                    reg = composer_cfg.get("regularizer", "<missing>")
+                    print(
+                        f"[composer-debug] Bound worker composer config: "
+                        f"clip={clip}, agg={agg}, regularizer={reg}"
+                    )
+            elif os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                keys = []
+                if isinstance(meta_info, dict):
+                    keys = list(meta_info.keys())
+                print(
+                    "[composer-debug] Missing composer config in worker update_policy. "
+                    f"meta_info_type={type(meta_info)}, meta_info_keys={keys}"
+                )
+        except Exception:
+            # Keep actor update path resilient; if config binding fails, the
+            # downstream loss sanity checks will fail fast with a clear error.
+            pass
+
+        return _ORIGINAL_DP_ACTOR_UPDATE_POLICY(self, data)
+
+    DataParallelPPOActor.update_policy = _composer_update_policy
+
+
+# Ensure worker-side config binding when this module is imported via
+# actor_rollout_ref.model.external_lib in FSDP worker processes.
+_patch_dp_actor_update_policy()
+
+
 class ComposerRayPPOTrainer(RayPPOTrainer):
     """Single custom trainer that extends VERL's RayPPOTrainer with flow plugins."""
 
@@ -655,11 +842,14 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
         set_composer_config(config_dict)
 
-        # Also export as env var so FSDP workers (child processes) can read it.
-        # Ray workers inherit env vars from the parent process.
-        import json
-        import os
-        os.environ["GRPO_COMPOSER_CONFIG"] = json.dumps(config_dict)
+        # Also store the raw dict so we can explicitly pass it via the DataBatch
+        # metadata. Ray workers do not reliably inherit environment variables after
+        # initialization, so we push it physically with the data.
+        self.composer_config_dict = config_dict
+        try:
+            os.environ["GRPO_COMPOSER_CONFIG"] = json.dumps(config_dict)
+        except Exception:
+            pass
 
     def _build_flow_plugins(self) -> list[FlowPlugin]:
         flow_names = _parse_flow_list(self.config)
@@ -685,8 +875,78 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                 "Set lambda_learnable=false for now or extend actor worker update path."
             )
 
+    def fit(self) -> None:
+        """Override fit to guarantee compute_advantage patching within the execution loop."""
+        import verl.trainer.ppo.ray_trainer as ray_trainer_module
+        import sys
+
+        # Force intercepting the locally scoped compute_advantage inside ray_trainer
+        original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
+        
+        try:
+            ray_trainer_module.compute_advantage = composer_compute_advantage
+            if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = composer_compute_advantage
+                
+            super().fit()
+        finally:
+            if original_compute_advantage is not None:
+                ray_trainer_module.compute_advantage = original_compute_advantage
+                if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                    sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = original_compute_advantage
+
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)
+        if hasattr(self, "composer_config_dict"):
+            composer_cfg = dict(self.composer_config_dict)
+            meta_info = getattr(batch, "meta_info", None)
+
+            if meta_info is None:
+                try:
+                    batch.meta_info = {}
+                    meta_info = batch.meta_info
+                except Exception:
+                    meta_info = None
+
+            injected = False
+            if isinstance(meta_info, dict):
+                meta_info["composer_config"] = composer_cfg
+                meta_info["composer_config_json"] = json.dumps(composer_cfg)
+                # Primitive backup keys for paths that strip nested dict payloads.
+                for k in ("clip_mode", "agg_mode", "regularizer", "reg_coef"):
+                    if k in composer_cfg:
+                        meta_info[f"composer_{k}"] = composer_cfg[k]
+                injected = True
+            else:
+                try:
+                    meta_info["composer_config"] = composer_cfg
+                    meta_info["composer_config_json"] = json.dumps(composer_cfg)
+                    for k in ("clip_mode", "agg_mode", "regularizer", "reg_coef"):
+                        if k in composer_cfg:
+                            meta_info[f"composer_{k}"] = composer_cfg[k]
+                    injected = True
+                except Exception:
+                    try:
+                        batch.meta_info = dict(meta_info) if meta_info is not None else {}
+                        batch.meta_info["composer_config"] = composer_cfg
+                        batch.meta_info["composer_config_json"] = json.dumps(composer_cfg)
+                        for k in ("clip_mode", "agg_mode", "regularizer", "reg_coef"):
+                            if k in composer_cfg:
+                                batch.meta_info[f"composer_{k}"] = composer_cfg[k]
+                        injected = True
+                    except Exception:
+                        injected = False
+
+            if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                keys = []
+                current_meta = getattr(batch, "meta_info", None)
+                if isinstance(current_meta, dict):
+                    keys = list(current_meta.keys())
+                print(
+                    f"[composer-debug] Inject composer_config into batch.meta_info: "
+                    f"success={injected}, meta_info_type={type(current_meta)}, meta_info_keys={keys}"
+                )
+
         for plugin in self.composer_flow_plugins:
             for key, value in plugin.build_loss_context(self, batch).items():
                 if isinstance(value, torch.Tensor):
@@ -734,6 +994,8 @@ def patch_verl_main_ppo() -> None:
         _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = main_ppo.RayPPOTrainer
         main_ppo.RayPPOTrainer = ComposerRayPPOTrainer
 
+    _patch_dp_actor_update_policy()
+
 
 def unpatch_verl_main_ppo() -> None:
     """Restore VERL's original trainer wiring if it was patched."""
@@ -744,6 +1006,7 @@ def unpatch_verl_main_ppo() -> None:
     global _ORIGINAL_COMPUTE_ADVANTAGE
     global _ORIGINAL_RAY_TRAINER_CLASS
     global _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
+    global _ORIGINAL_DP_ACTOR_UPDATE_POLICY
 
     if _ORIGINAL_COMPUTE_ADVANTAGE is not None:
         ray_trainer_module.compute_advantage = _ORIGINAL_COMPUTE_ADVANTAGE
@@ -761,3 +1024,7 @@ def unpatch_verl_main_ppo() -> None:
             _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
     except Exception:
         pass
+
+    if DataParallelPPOActor is not None and _ORIGINAL_DP_ACTOR_UPDATE_POLICY is not None:
+        DataParallelPPOActor.update_policy = _ORIGINAL_DP_ACTOR_UPDATE_POLICY
+        _ORIGINAL_DP_ACTOR_UPDATE_POLICY = None
