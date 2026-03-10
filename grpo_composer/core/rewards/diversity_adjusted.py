@@ -4,7 +4,7 @@ Diversity Adjusted Reward Calculator (DRA-GRPO)
 Implements Diversity-aware Reward Adjustment using Submodular Mutual Information.
 
 Formula:
-    R'(q, o_i) = R(q, o_i) / (1 + SMI({o_i}, C \\ {o_i}))
+    R'(q, o_i) = R(q, o_i) * (1 - SMI({o_i}, C \\ {o_i}))
 
 Where SMI is computed as the sum of cosine similarities to other completions:
     SMI({o_i}, C \\ {o_i}) = Σ_{j ≠ i} cos_sim(embedding_i, embedding_j)
@@ -17,6 +17,7 @@ Output:
     torch.Tensor of shape (batch_size, num_completions)
 """
 
+import os
 import torch
 import torch.nn.functional as F
 from .base import RewardCalculator
@@ -26,7 +27,7 @@ class DiversityAdjustedRewardCalculator(RewardCalculator):
     """
     DRA-GRPO: Diversity-Aware Reward Adjustment using Submodular Mutual Information.
     
-    Penalizes redundant responses by dividing reward by (1 + SMI), where SMI
+    Penalizes redundant responses by multiplying reward by (1 - SMI), where SMI
     measures similarity to other responses in the group.
     
     Args:
@@ -102,5 +103,23 @@ class DiversityAdjustedRewardCalculator(RewardCalculator):
         Returns:
             adjusted_rewards: shape (batch_size, num_completions)
         """
+        import os
         smi_scores = self._calculate_smi()
-        return self.rewards / (1.0 + smi_scores + self.epsilon)
+        
+        # DRA-GRPO paper formulation: R' = R * (1 - SMI)
+        # However, SMI can be > 1.0 depending on similarity and group size.
+        # We clamp (1 - SMI) between [epsilon, 1.0] to prevent negative rewards
+        # and ensure a valid scaling factor. 
+        # But wait! If SMI is 0, (1 - SMI) is 1.0 (no penalty).
+        
+        multiplier = torch.clamp(1.0 - smi_scores, min=self.epsilon, max=1.0)
+        
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"🧮 [DEBUG] DRA-GRPO SMI calculation:")
+            print(f"          Raw SMI scores min: {smi_scores.min().item():.4f}")
+            print(f"          Raw SMI scores mean: {smi_scores.mean().item():.4f}")
+            print(f"          Raw SMI scores max: {smi_scores.max().item():.4f}")
+            print(f"          Multiplier mean: {multiplier.mean().item():.4f}")
+            print(f"          SMI shape: {smi_scores.shape}")
+            
+        return self.rewards * multiplier
