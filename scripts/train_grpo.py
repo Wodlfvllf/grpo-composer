@@ -17,8 +17,11 @@ Usage:
     bash scripts/train.sh configs/custom_mix.yaml Qwen/Qwen2.5-7B openai/gsm8k 4
 """
 
+import json
+import os
 import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 # Ensure local repository root is first on sys.path when this file is executed
 # as a script (e.g., in Modal), so imports resolve to the mounted workspace code.
@@ -52,6 +55,92 @@ import verl.trainer.main_ppo as _main_ppo
 from verl.trainer.main_ppo import TaskRunner
 
 
+def _cfg_get(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    getter = getattr(obj, "get", None)
+    if callable(getter):
+        try:
+            value = getter(key, default)
+            return default if value is None else value
+        except Exception:
+            pass
+    try:
+        value = obj[key]
+        return default if value is None else value
+    except Exception:
+        pass
+    value = getattr(obj, key, default)
+    return default if value is None else value
+
+
+def _to_plain_dict(value: Any) -> dict[str, Any]:
+    try:
+        from omegaconf import OmegaConf
+
+        if OmegaConf.is_config(value):
+            value = OmegaConf.to_container(value, resolve=True)
+    except Exception:
+        pass
+
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def _inject_composer_env_into_ray_runtime(config: Any) -> None:
+    """Ensure all Ray actors/workers start with composer config in env.
+
+    This is the most reliable cross-process transport for strict veRL dataclass
+    setups where custom config keys cannot be added under actor configs.
+    """
+
+    composer_cfg = _to_plain_dict(_cfg_get(config, "composer", None))
+    if not composer_cfg:
+        return
+
+    composer_json = json.dumps(composer_cfg, sort_keys=True)
+
+    try:
+        from omegaconf import OmegaConf, open_dict
+
+        with open_dict(config):
+            if _cfg_get(config, "ray_kwargs", None) is None:
+                config.ray_kwargs = OmegaConf.create({})
+            with open_dict(config.ray_kwargs):
+                if _cfg_get(config.ray_kwargs, "ray_init", None) is None:
+                    config.ray_kwargs.ray_init = OmegaConf.create({})
+                with open_dict(config.ray_kwargs.ray_init):
+                    if _cfg_get(config.ray_kwargs.ray_init, "runtime_env", None) is None:
+                        config.ray_kwargs.ray_init.runtime_env = OmegaConf.create({})
+                    with open_dict(config.ray_kwargs.ray_init.runtime_env):
+                        if _cfg_get(config.ray_kwargs.ray_init.runtime_env, "env_vars", None) is None:
+                            config.ray_kwargs.ray_init.runtime_env.env_vars = OmegaConf.create({})
+                        with open_dict(config.ray_kwargs.ray_init.runtime_env.env_vars):
+                            config.ray_kwargs.ray_init.runtime_env.env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+    except Exception:
+        # Dict-like fallback for non-OmegaConf configs.
+        ray_kwargs = _to_plain_dict(_cfg_get(config, "ray_kwargs", {}))
+        ray_init = _to_plain_dict(_cfg_get(ray_kwargs, "ray_init", {}))
+        runtime_env = _to_plain_dict(_cfg_get(ray_init, "runtime_env", {}))
+        env_vars = _to_plain_dict(_cfg_get(runtime_env, "env_vars", {}))
+        env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+        runtime_env["env_vars"] = env_vars
+        ray_init["runtime_env"] = runtime_env
+        ray_kwargs["ray_init"] = ray_init
+        try:
+            config["ray_kwargs"] = ray_kwargs
+        except Exception:
+            pass
+
+    # Also set in current process for local fallbacks and eager imports.
+    os.environ["GRPO_COMPOSER_CONFIG"] = composer_json
+
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        keys = sorted(composer_cfg.keys())
+        print(f"[composer-debug] Injected GRPO_COMPOSER_CONFIG into Ray runtime env. keys={keys}")
+
+
 class ComposerTaskRunner(TaskRunner):
     """TaskRunner that ensures grpo_composer patches are applied in this process."""
 
@@ -68,6 +157,7 @@ _original_run_ppo = _main_ppo.run_ppo
 
 
 def _composer_run_ppo(config, task_runner_class=None):
+    _inject_composer_env_into_ray_runtime(config)
     if task_runner_class is None:
         task_runner_class = ray.remote(num_cpus=1)(ComposerTaskRunner)
     return _original_run_ppo(config, task_runner_class=task_runner_class)
@@ -92,4 +182,3 @@ if __name__ == "__main__":
     print("=" * 60)
 
     main()
-

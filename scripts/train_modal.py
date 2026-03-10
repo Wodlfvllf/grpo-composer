@@ -260,6 +260,7 @@ def run_training(
     total_epochs: int = 3,
     n_gpus_per_node: int = 1,
     extra_overrides: str = "",
+    debug : bool = False,
 ) -> str:
     validate_runtime_stack()
 
@@ -405,6 +406,8 @@ def run_training(
     env["PYTHONPATH"] = (
         f"{REMOTE_ROOT}:{existing_pythonpath}" if existing_pythonpath else str(REMOTE_ROOT)
     )
+    if debug:
+        env["GRPO_COMPOSER_DEBUG"] = "1"
 
     subprocess.run(
         command,
@@ -426,7 +429,9 @@ def main(
     total_epochs: int = 3,
     n_gpus_per_node: int = 1,
     extra_overrides: str = "",
+    debug: bool = False,
 ) -> None:
+
     print(f"Modal app: {APP_NAME}")
     print(f"Canonical runtime stack: {runtime_summary_text()}")
     print(f"GPU config: {GPU_CONFIG}")
@@ -450,5 +455,7 @@ def main(
         total_epochs=total_epochs,
         n_gpus_per_node=n_gpus_per_node,
         extra_overrides=extra_overrides,
+        debug=debug,
     )
+
     print(f"Training finished. Checkpoints written to: {checkpoint_path}")
