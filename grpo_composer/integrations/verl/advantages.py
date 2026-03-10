@@ -8,6 +8,8 @@ shape conversions between veRL batch tensors and grpo_composer core APIs.
 from collections import defaultdict
 from typing import Any, Callable, Optional
 
+import os
+
 import numpy as np
 import torch
 
@@ -458,11 +460,14 @@ def compute_unbiased_advantage(
     config: Optional[AlgoConfig] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print("🚀 [DEBUG] compute_unbiased_advantage called!")
+
     _validate_inputs(token_level_rewards, response_mask, index)
     scores = _sequence_scores(token_level_rewards, response_mask)
     group_indices = _collect_group_indices(index, scores.shape[0])
 
     fn = UnbiasedAdvantageFunction()
     with torch.no_grad():
-        sequence_adv = _compute_groupwise(scores, group_indices, fn.compute_advantages)
+        sequence_adv = _compute_groupwise(scores, group_indices, fn.compute_advantages) 
     return _broadcast_sequence_advantages(sequence_adv, response_mask)
