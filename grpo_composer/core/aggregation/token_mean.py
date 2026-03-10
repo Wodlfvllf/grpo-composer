@@ -14,6 +14,7 @@ Effect:
     Each sequence contributes equally regardless of length.
     Longer sequences have diluted per-token gradients.
 """
+import os
 import torch
 from .base import AggregationFunction
 
@@ -35,6 +36,9 @@ class TokenMeanAggregation(AggregationFunction):
             Step 2: seq_loss (B,) — mean over tokens per sequence: Σ_t loss_t / |o_i|
             Step 3: loss (scalar) — mean over sequences: (1/G) * Σ_i seq_loss_i
         """
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print("🧮 [DEBUG] TokenMeanAggregation: Running base GRPO token_mean math!")
+
         # Per-sequence token mean: (1/|o_i|) * Σ_t loss_t
         # mask.sum(dim=-1): (B, T) → (B,)
         # (loss_per_token * mask).sum(dim=-1): (B, T) → (B,)

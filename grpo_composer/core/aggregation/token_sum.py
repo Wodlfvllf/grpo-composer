@@ -18,6 +18,7 @@ Rationale:
     Avoids gradient dilution for longer sequences.
     Longer correct responses get proportionally more gradient signal.
 """
+import os
 import torch
 from .base import AggregationFunction
 
@@ -38,6 +39,9 @@ class TokenSumAggregation(AggregationFunction):
             Step 1: seq_loss (B,) — SUM over tokens (NO division by token count — key difference)
             Step 2: loss (scalar) — mean over sequences: (1/G) * Σ_i seq_loss_i
         """
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print("🧮 [DEBUG] TokenSumAggregation: Running Dr. GRPO token_sum math!")
+
         # Per-sequence token SUM (NO length normalization — Dr.GRPO key change)
         # (loss_per_token * mask).sum(dim=-1): (B, T) → (B,)
         seq_loss = (loss_per_token * mask).sum(dim=-1)
