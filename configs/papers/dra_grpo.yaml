@@ -3,7 +3,7 @@
 # Paper: https://arxiv.org/abs/2503.xxxxx
 # ──────────────────────────────────────────────────────
 # Key changes from base GRPO:
-#   1. Diversity-adjusted reward: R'(q, o_i) = R(q, o_i) / (1 + SMI)
+#   1. Diversity-adjusted reward: R'(q, o_i) = R(q, o_i) * (1 - SMI)
 #      where SMI measures pairwise similarity within a group
 #   2. Penalizes redundant responses that merely replicate others
 #
@@ -12,7 +12,7 @@
 #   Clipping:      Symmetric (base)
 #   Aggregation:   Token mean (base)
 #   Regularizer:   KL (base)
-#   Reward:        DiversityAdjustedRewardCalculator (DRA-GRPO specific!)
+#   Reward:        DiversityAdjustedRewardCalculator (via reward_pipeline)
 #
 # Note: Diversity reward calculation requires pairwise similarity
 #       computation at rollout time — handled by training loop.
@@ -20,6 +20,9 @@
 algorithm:
   adv_estimator: grpo
 actor_rollout_ref:
+  rollout:
+    # DRA-GRPO needs >1 completions per prompt to compute pairwise similarity.
+    n: 8
   actor:
     policy_loss:
       loss_mode: composer
@@ -29,3 +32,5 @@ composer:
   agg_mode: token_mean
   regularizer: kl
   reg_coef: 0.01
+  reward_pipeline: ["diversity_adjusted"]
+  diversity_epsilon: 1e-6
