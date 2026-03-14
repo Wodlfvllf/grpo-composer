@@ -43,6 +43,7 @@ from grpo_composer.core.regularizers.preference import PreferenceRegularizer
 # or lazily resolved from Hydra's global config in FSDP worker processes.
 _COMPOSER_CONFIG: dict[str, Any] = {}
 _COMPOSER_CONFIG_LOADED: bool = False
+_COMPOSER_BATCH_CONTEXT: dict[str, Any] = {}
 
 
 def set_composer_config(config_dict: dict[str, Any]) -> None:
@@ -75,6 +76,21 @@ def _ensure_composer_config_loaded() -> None:
 def get_composer_config() -> dict[str, Any]:
     _ensure_composer_config_loaded()
     return dict(_COMPOSER_CONFIG)
+
+
+def set_composer_batch_context(context: dict[str, Any]) -> None:
+    """Store per-update worker context (uid/correctness/etc.) for loss dispatch."""
+    global _COMPOSER_BATCH_CONTEXT
+    _COMPOSER_BATCH_CONTEXT = dict(context or {})
+
+
+def get_composer_batch_context() -> dict[str, Any]:
+    return dict(_COMPOSER_BATCH_CONTEXT)
+
+
+def clear_composer_batch_context() -> None:
+    global _COMPOSER_BATCH_CONTEXT
+    _COMPOSER_BATCH_CONTEXT = {}
 
 
 def _config_get(
@@ -293,17 +309,98 @@ def agg_group_learnable(loss_mat, mask, config, **kwargs):
 
 def agg_difficulty_weighted(loss_mat, mask, config, **kwargs):
     module = kwargs.get("composer_difficulty_agg_module")
+    learnable = bool(_config_get(config, "difficulty_weight_learnable", True))
+    init_weight = float(_config_get(config, "difficulty_weight_init", 1.0))
     if module is None:
-        module = DifficultyWeightedAggregation(num_bins=int(_config_get(config, "difficulty_bins", 10)))
+        if learnable:
+            raise ValueError(
+                "agg_mode=difficulty_weighted with difficulty_weight_learnable=true requires "
+                "trainer-injected 'composer_difficulty_agg_module'."
+            )
+        module = DifficultyWeightedAggregation(
+            num_bins=int(_config_get(config, "difficulty_bins", 10)),
+            weight_c=float(_config_get(config, "difficulty_weight_c", 1.0)),
+            learnable=False,
+            init_weight=init_weight,
+        )
 
-    rewards = kwargs.get("sequence_rewards")
-    if rewards is None:
-        rewards = kwargs.get("composer_sequence_rewards")
+    batch_size = mask.shape[0]
 
-    if rewards is not None:
-        _validate_tensor_shape(rewards, ndim=(1,), first_dim=mask.shape[0], name="sequence_rewards")
+    mu_id_row = None
+    for key in ("daro_mu_id_row", "composer_daro_mu_id_row", "mu_id_row", "composer_mu_id_row"):
+        candidate = kwargs.get(key)
+        if candidate is None:
+            continue
+        candidate = _as_tensor(candidate, name=key, device=mask.device)
+        if candidate.ndim == 1 and candidate.shape[0] == batch_size:
+            mu_id_row = candidate.to(dtype=torch.long)
+            break
 
-    return module.aggregate(loss_mat, mask, rewards=rewards)
+    inv_group_tokens_row = None
+    for key in (
+        "daro_inv_group_tokens_row",
+        "composer_daro_inv_group_tokens_row",
+        "inv_group_tokens_row",
+        "composer_inv_group_tokens_row",
+    ):
+        candidate = kwargs.get(key)
+        if candidate is None:
+            continue
+        candidate = _as_tensor(candidate, name=key, device=mask.device)
+        if candidate.ndim == 1 and candidate.shape[0] == batch_size:
+            inv_group_tokens_row = candidate
+            break
+
+    active_mu_ids = None
+    for key in ("daro_active_mu_ids", "composer_daro_active_mu_ids", "active_mu_ids", "composer_active_mu_ids"):
+        candidate = kwargs.get(key)
+        if candidate is None:
+            continue
+        candidate = _as_tensor(candidate, name=key, device=mask.device)
+        if candidate.ndim == 1:
+            active_mu_ids = candidate.to(dtype=torch.long)
+            break
+
+    if mu_id_row is None or inv_group_tokens_row is None:
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            shape_debug = []
+            for key in (
+                "daro_mu_id_row",
+                "composer_daro_mu_id_row",
+                "mu_id_row",
+                "composer_mu_id_row",
+                "daro_inv_group_tokens_row",
+                "composer_daro_inv_group_tokens_row",
+                "inv_group_tokens_row",
+                "composer_inv_group_tokens_row",
+                "daro_active_mu_ids",
+                "composer_daro_active_mu_ids",
+            ):
+                value = kwargs.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, np.ndarray):
+                    shape_debug.append(f"{key}=np{tuple(value.shape)}")
+                elif isinstance(value, torch.Tensor):
+                    shape_debug.append(f"{key}=torch{tuple(value.shape)}")
+                else:
+                    shape_debug.append(f"{key}={type(value).__name__}")
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"missing DARO row context for B={batch_size}. candidates={shape_debug}"
+            )
+        raise ValueError(
+            "difficulty_weighted requires DARO row context from trainer. "
+            "Expected daro_mu_id_row and daro_inv_group_tokens_row aligned to current microbatch."
+        )
+
+    return module.aggregate(
+        loss_mat,
+        mask,
+        mu_id_row=mu_id_row,
+        inv_group_tokens_row=inv_group_tokens_row,
+        active_mu_ids=active_mu_ids,
+    )
 
 
 AGG_REGISTRY = {
@@ -330,6 +427,9 @@ VERL_AGG_MODES = {
 
 
 def reg_none(log_prob, old_log_prob, response_mask, config, **kwargs):
+    import os
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print("⚖️  [DEBUG] Regularizer: None (DAPO style, returning 0.0)")
     return torch.tensor(0.0, device=log_prob.device)
 
 
@@ -577,6 +677,7 @@ def compute_composer_loss(
     sequence_rewards = _infer_sequence_rewards(response_mask, kwargs, config)
 
     runtime_context = dict(kwargs)
+    runtime_context.update(get_composer_batch_context())
     runtime_context["log_prob"] = log_prob
     if sequence_rewards is not None:
         runtime_context["sequence_rewards"] = sequence_rewards
