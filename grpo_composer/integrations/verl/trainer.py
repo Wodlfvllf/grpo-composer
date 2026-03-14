@@ -430,6 +430,62 @@ def _apply_diversity_adjusted_reward_transform(data: Any, config: Any) -> None:
     _write_sequence_rewards_as_token_rewards(data, adjusted)
 
 
+def _apply_frequency_aware_reward_transform(data: Any, config: Any) -> None:
+    from grpo_composer.core.rewards.frequency_aware import FrequencyAwareRewardCalculator
+
+    token_level_rewards = data.batch["token_level_rewards"]
+    response_mask = data.batch["response_mask"]
+    
+    sequence_rewards = _sequence_rewards_from_token(token_level_rewards, response_mask)
+    sequence_correctness = _resolve_sequence_correctness(data, sequence_rewards)
+    
+    responses = data.batch["responses"]
+    adjusted = torch.zeros_like(sequence_rewards)
+    groups = _get_uid_groups(data, sequence_rewards.shape[0])
+
+    for indices in groups.values():
+        idx = torch.tensor(indices, device=sequence_rewards.device, dtype=torch.long)
+        grp_rewards = sequence_correctness[idx]
+        grp_responses = responses[idx]
+        grp_masks = response_mask[idx]
+
+        # Convert responses to hashable tuples, cropping out padding
+        completions = []
+        valid_set = set()
+        
+        for i in range(len(idx)):
+            length = grp_masks[i].sum().item()
+            # extract only the active tokens
+            seq_tuple = tuple(grp_responses[i, :length].tolist())
+            completions.append(seq_tuple)
+            
+            # If the base reward is > 0, it's a valid answer
+            if grp_rewards[i].item() > 0:
+                valid_set.add(seq_tuple)
+
+        # If there are no valid answers, just use base rewards (which are likely all negative/zero)
+        if len(valid_set) == 0:
+            adjusted[idx] = grp_rewards
+            continue
+
+        invalid_penalty = float(_cfg_get(config, "diversity_invalid_penalty", -1.0))
+        calculator = FrequencyAwareRewardCalculator(
+            completions=completions,
+            valid_set=valid_set,
+            invalid_penalty=invalid_penalty
+        )
+        
+        grp_adjusted = calculator.compute_rewards().to(sequence_rewards.device)
+        adjusted[idx] = grp_adjusted
+
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(f"🧮 [DEBUG] GAPO Frequency-Aware Penalty Applied:")
+        print(f"          Original Sequence Rewards (Mean): {sequence_correctness.mean().item():.4f}")
+        print(f"          Adjusted Sequence Rewards (Mean): {adjusted.mean().item():.4f}")
+
+    _write_sequence_rewards_as_token_rewards(data, adjusted)
+
+
 _REWARD_TRANSFORMS = {
     "unlikeliness": _apply_unlikeliness_reward_transform,
     "rank": _apply_rank_enhanced_reward_transform,
@@ -438,6 +494,7 @@ _REWARD_TRANSFORMS = {
     "multi_reward": _apply_multi_reward_transform,
     "length_dependent": _apply_length_dependent_reward_transform,
     "diversity_adjusted": _apply_diversity_adjusted_reward_transform,
+    "frequency_aware": _apply_frequency_aware_reward_transform,
 }
 
 

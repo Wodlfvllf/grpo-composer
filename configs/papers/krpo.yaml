@@ -22,10 +22,10 @@
 
 algorithm:
   adv_estimator: kalman_grpo
+  kalman_Q: 1e-5
+  kalman_R: 1e-2
 actor_rollout_ref:
   actor:
-    kalman_Q: 1e-5
-    kalman_R: 1e-2
     policy_loss:
       loss_mode: composer
 composer:

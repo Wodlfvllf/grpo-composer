@@ -54,7 +54,7 @@ class TokenMeanAggregation(AggregationFunction):
                 "🧮 [DEBUG] TokenMeanAggregation stats | "
                 f"B={loss_per_token.shape[0]} "
                 f"token_count(mean/min/max)="
-                f"{float(token_count.mean().item()):.2f}/"
+                f"{float(token_count.sum()):.2f}/"
                 f"{float(token_count.min().item()):.0f}/"
                 f"{float(token_count.max().item()):.0f} "
                 f"seq_loss(mean/min/max)="
