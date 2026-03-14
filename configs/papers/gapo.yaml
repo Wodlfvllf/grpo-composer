@@ -31,3 +31,4 @@ composer:
   agg_mode: token_mean
   regularizer: kl
   reg_coef: 0.01
+  reward_pipeline: ["frequency_aware"]
