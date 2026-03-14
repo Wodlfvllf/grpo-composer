@@ -52,6 +52,10 @@ class AsymmetricClippingMechanism(ClippingMechanism):
         Returns:
             Clipped ratios in range [1-ε_l, 1+ε_h]
         """
+        import os
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"✂️  [DEBUG] AsymmetricClipping: clip_low={1-self.epsilon_lower:.2f}, clip_high={1+self.epsilon_upper:.2f}")
+            
         return torch.clamp(
             probs_ratio,
             1 - self.epsilon_lower,

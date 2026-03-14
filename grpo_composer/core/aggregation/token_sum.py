@@ -48,4 +48,20 @@ class TokenSumAggregation(AggregationFunction):
 
         # Group mean, then batch mean
         # seq_loss.mean(): (B,) → scalar
-        return seq_loss.mean()
+        total = seq_loss.mean()
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            token_count = mask.sum(dim=-1)
+            print(
+                "🧮 [DEBUG] TokenSumAggregation stats | "
+                f"B={loss_per_token.shape[0]} "
+                f"token_count(mean/min/max)="
+                f"{float(token_count.mean().item()):.2f}/"
+                f"{float(token_count.min().item()):.0f}/"
+                f"{float(token_count.max().item()):.0f} "
+                f"seq_sum(mean/min/max)="
+                f"{float(seq_loss.mean().item()):.6f}/"
+                f"{float(seq_loss.min().item()):.6f}/"
+                f"{float(seq_loss.max().item()):.6f} "
+                f"total={float(total.item()):.6f}"
+            )
+        return total
