@@ -9,6 +9,7 @@ Mathematical Form:
 Standard uniform weighting across all G responses in the group.
 Each response contributes equally to the loss.
 """
+import os
 import torch
 from .base import AggregationFunction
 
@@ -39,4 +40,19 @@ class GroupUniformAggregation(AggregationFunction):
 
         # Uniform group mean (all B sequences weighted equally)
         # seq_loss.mean(): (B,) → scalar
-        return seq_loss.mean()
+        total = seq_loss.mean()
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(
+                "🧮 [DEBUG] GroupUniformAggregation stats | "
+                f"B={loss_per_token.shape[0]} "
+                f"token_count(mean/min/max)="
+                f"{float(token_count.mean().item()):.2f}/"
+                f"{float(token_count.min().item()):.0f}/"
+                f"{float(token_count.max().item()):.0f} "
+                f"seq_loss(mean/min/max)="
+                f"{float(seq_loss.mean().item()):.6f}/"
+                f"{float(seq_loss.min().item()):.6f}/"
+                f"{float(seq_loss.max().item()):.6f} "
+                f"total={float(total.item()):.6f}"
+            )
+        return total
