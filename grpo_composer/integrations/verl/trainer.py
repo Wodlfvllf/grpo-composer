@@ -1285,7 +1285,7 @@ def _patch_dp_actor_update_policy() -> None:
                         mini_inv_group_tokens_row = torch.tensor(
                             [float(mini_uid_to_inv_group_tokens[u]) for u in mini_uid_list],
                             device=mini_mask.device,
-                            dtype=mini_mask.dtype,
+                            dtype=mini_rewards.dtype,
                         )
                         mini_active_mu_ids_tensor = torch.tensor(
                             mini_active_mu_ids,
@@ -1425,7 +1425,7 @@ def _patch_dp_actor_update_policy() -> None:
                                 )
                                 inv_group_tokens_row = inv_group_tokens_row.to(
                                     device=response_mask.device,
-                                    dtype=response_mask.dtype,
+                                    dtype=token_level_rewards.dtype,
                                 )
 
                                 loss_extra_kwargs["daro_mu_id_row"] = mu_id_row

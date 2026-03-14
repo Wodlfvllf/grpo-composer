@@ -32,6 +32,7 @@ class KalmanAdvantageFunction(AdvantageFunction):
         # State initialized on first call
         self.x_hat = None  # State estimate
         self.P = None      # Error covariance
+
     def _kalman_update(self, measurement: float):
         """Single Kalman filter update step."""
         if self.x_hat is None:
@@ -48,6 +49,7 @@ class KalmanAdvantageFunction(AdvantageFunction):
         K = P_pred / (P_pred + self.R)           # Kalman gain
         self.x_hat = x_pred + K * (measurement - x_pred)
         self.P = (1 - K) * P_pred
+        
     def compute_advantages(self, rewards: torch.Tensor) -> torch.Tensor:
         """
         Args:
