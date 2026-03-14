@@ -18,6 +18,7 @@ Rationale:
     Each TOKEN contributes equally, regardless of which sequence it's in.
     Avoids bias toward shorter sequences.
 """
+import os
 import torch
 from .base import AggregationFunction
 
@@ -47,4 +48,16 @@ class GlobalTokenAggregation(AggregationFunction):
         # Division: scalar / scalar → scalar
         total_loss = (loss_per_token * mask).sum()
         total_tokens = mask.sum()
-        return total_loss / (total_tokens + 1e-8)
+
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(
+                "🧮 [DEBUG] GlobalTokenAggregation stats | "
+                f"B={loss_per_token.shape[0]} "
+                f"total_loss={float(total_loss.item()):.6f} "
+                f"total_tokens={float(total_tokens.item()):.0f}"
+            )
+
+        total = total_loss / (total_tokens + 1e-8)
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"🧮 [DEBUG] GlobalTokenAggregation total={float(total.item()):.6f}")
+        return total
