@@ -35,6 +35,19 @@ class DifficultyWeightedAggregation(AggregationFunction):
     def _debug_enabled() -> bool:
         return os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
 
+    @staticmethod
+    def _debug_max_rows() -> int:
+        raw = os.environ.get("GRPO_COMPOSER_DEBUG_MAX_ROWS", "8")
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 8
+
+    @staticmethod
+    def _preview_1d(tensor: torch.Tensor, n: int) -> list[float]:
+        flat = tensor.reshape(-1)[:n].detach().cpu().tolist()
+        return [float(x) for x in flat]
+
     def _resolve_weights(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         if self.learnable and self.weight_params is not None:
             return F.softplus(self.weight_params.to(device=device, dtype=dtype)) + self.epsilon
@@ -123,11 +136,40 @@ class DifficultyWeightedAggregation(AggregationFunction):
         total_loss = loss_main + loss_reg
 
         if self._debug_enabled():
+            preview_n = min(self._debug_max_rows(), int(loss_per_token.shape[0]))
+            mu_preview = mu_id_row[:preview_n].detach().cpu().tolist()
+            inv_preview = self._preview_1d(inv_group_tokens_row, preview_n)
+            sj_preview = self._preview_1d(s_j, preview_n)
+            if s_valid.numel() > 0:
+                row_weights = all_weights.index_select(0, mu_valid)
+                row_w_preview = self._preview_1d(row_weights, min(preview_n, int(row_weights.shape[0])))
+            else:
+                row_w_preview = []
+            if active_mu_ids.numel() > 0:
+                active_weights = all_weights.index_select(0, active_mu_ids)
+                active_w_preview = self._preview_1d(active_weights, int(active_weights.shape[0]))
+            else:
+                active_w_preview = []
             print(
                 "[composer-debug][difficulty_weighted] "
                 f"B={loss_per_token.shape[0]} active_rows={int(valid_rows.sum().item())} "
                 f"active_bins={active_mu_ids.detach().cpu().tolist()} "
                 f"learnable={self.learnable}"
+            )
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"inputs: loss_shape={tuple(loss_per_token.shape)} mask_shape={tuple(mask.shape)} "
+                f"mu_shape={tuple(mu_id_row.shape)} inv_shape={tuple(inv_group_tokens_row.shape)}"
+            )
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"preview: mu_id_row[:{preview_n}]={mu_preview} "
+                f"inv_N_row[:{preview_n}]={inv_preview} "
+                f"s_j[:{preview_n}]={sj_preview}"
+            )
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"weights: row_w_preview={row_w_preview} active_w={active_w_preview}"
             )
             print(
                 "[composer-debug][difficulty_weighted] "

@@ -555,6 +555,42 @@ def composer_compute_advantage(
     # import hasn't run).
     import grpo_composer.integrations.verl.advantages  # noqa: F401
 
+    # ── uid fixup ──────────────────────────────────────────────────────
+    # veRL's RayPPOTrainer.fit() assigns uid *before* DataProto.repeat(),
+    # expecting repeat(interleave=True) to replicate non_tensor_batch.
+    # Some veRL versions do NOT replicate non_tensor_batch, leaving every
+    # row with a unique uid (hist={1: total_rows}) — no grouping at all.
+    # Detect this and reconstruct per-prompt uids from num_repeat.
+    _has_uid = (
+        hasattr(data, "non_tensor_batch")
+        and data.non_tensor_batch is not None
+        and "uid" in data.non_tensor_batch
+    )
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(f"[composer-debug] uid fixup check: num_repeat={num_repeat} has_uid={_has_uid}")
+    if num_repeat > 1 and _has_uid:
+        uid_raw = data.non_tensor_batch["uid"]
+        uid_arr = np.asarray(uid_raw)
+        total_rows = uid_arr.shape[0]
+        unique_count = len(set(uid_arr.tolist()))
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"[composer-debug] uid fixup pre: total={total_rows} unique={unique_count}")
+        if unique_count == total_rows and total_rows % num_repeat == 0:
+            # Every row is unique → repeat() didn't propagate non_tensor_batch.
+            # Reconstruct: rows are interleaved, so row i belongs to prompt i // num_repeat.
+            num_prompts = total_rows // num_repeat
+            fixed_uid = np.array(
+                [uid_arr[i * num_repeat] for i in range(num_prompts) for _ in range(num_repeat)],
+                dtype=uid_arr.dtype,
+            )
+            data.non_tensor_batch["uid"] = fixed_uid
+            if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                fixed_unique = len(set(fixed_uid.tolist()))
+                print(
+                    f"[composer-debug] uid fixup: {total_rows} rows had {unique_count} unique uids "
+                    f"→ reconstructed {fixed_unique} unique uids (num_repeat={num_repeat})"
+                )
+
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = ray_trainer_module.compute_response_mask(data)
 
@@ -840,6 +876,68 @@ def _patch_dp_actor_update_policy() -> None:
             uid = _read_key(non_tensor_batch, "uid")
             if uid is None:
                 uid = _read_key(tensor_batch, "uid")
+
+            # ── uid fixup (worker side) ────────────────────────────────
+            # Mirror the driver-side fixup: if repeat() didn't propagate
+            # non_tensor_batch, every row has a unique uid → no grouping.
+            if uid is not None:
+                _uid_arr = np.asarray(uid)
+                _total = _uid_arr.shape[0]
+                _unique = len(set(_uid_arr.tolist()))
+                # Resolve num_repeat: try meta_info["rollout_n"], then
+                # meta_info["n"], then composer config, then self.config.
+                _n_repeat = None
+                for _mi_key in ("rollout_n", "n"):
+                    if _n_repeat is not None:
+                        break
+                    if isinstance(meta_info, dict):
+                        _n_repeat = meta_info.get(_mi_key)
+                    else:
+                        _getter = getattr(meta_info, "get", None)
+                        if callable(_getter):
+                            try:
+                                _n_repeat = _getter(_mi_key, None)
+                            except Exception:
+                                pass
+                if _n_repeat is None and isinstance(composer_cfg, dict):
+                    _n_repeat = composer_cfg.get("rollout_n")
+                if _n_repeat is None:
+                    _cfg_env = os.environ.get("GRPO_COMPOSER_ROLLOUT_N")
+                    if _cfg_env is not None:
+                        try:
+                            _n_repeat = int(_cfg_env)
+                        except ValueError:
+                            pass
+                if _n_repeat is not None:
+                    _n_repeat = int(_n_repeat)
+                if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                    print(
+                        f"[composer-debug] worker uid fixup check: total={_total} "
+                        f"unique={_unique} n_repeat={_n_repeat}"
+                    )
+                if (
+                    _n_repeat is not None
+                    and _n_repeat > 1
+                    and _unique == _total
+                    and _total % _n_repeat == 0
+                ):
+                    _fixed = np.array(
+                        [_uid_arr[i * _n_repeat] for i in range(_total // _n_repeat) for _ in range(_n_repeat)],
+                        dtype=_uid_arr.dtype,
+                    )
+                    uid = _fixed
+                    if non_tensor_batch is not None:
+                        try:
+                            non_tensor_batch["uid"] = _fixed
+                            data.non_tensor_batch["uid"] = _fixed
+                        except Exception:
+                            pass
+                    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                        print(
+                            f"[composer-debug] worker uid fixup: {_total} rows had {_unique} unique uids "
+                            f"→ reconstructed {len(set(_fixed.tolist()))} unique uids (n={_n_repeat})"
+                        )
+
             if uid is not None:
                 batch_context["composer_uid"] = uid
 
@@ -1074,11 +1172,36 @@ def _patch_dp_actor_update_policy() -> None:
 
             for _ in range(self.config.ppo_epochs):
                 for batch_idx, mini_batch in enumerate(mini_batches):
+                    if daro_enabled and os.environ.get("GRPO_COMPOSER_DEBUG") == "1" and batch_idx == 0:
+                        data_uid = None
+                        if "uid" in data.non_tensor_batch:
+                            data_uid = data.non_tensor_batch["uid"]
+                        elif "uid" in data.batch.keys():
+                            data_uid = data.batch["uid"]
+
+                        if data_uid is not None:
+                            if isinstance(data_uid, torch.Tensor):
+                                data_uid_arr = data_uid.detach().cpu().numpy()
+                            else:
+                                data_uid_arr = np.asarray(data_uid)
+                            uid_counts = defaultdict(int)
+                            for uid_key in data_uid_arr.tolist():
+                                uid_counts[uid_key] += 1
+                            count_hist = defaultdict(int)
+                            for cnt in uid_counts.values():
+                                count_hist[int(cnt)] += 1
+                            hist_sorted = {k: count_hist[k] for k in sorted(count_hist.keys())}
+                            print(
+                                "[composer-debug][daro] actor-batch uid multiplicity: "
+                                f"rows={len(data_uid_arr)} unique_uids={len(uid_counts)} "
+                                f"hist={hist_sorted}"
+                            )
 
                     mini_uid_to_bin: dict[Any, int] = {}
                     mini_uid_to_inv_group_tokens: dict[Any, float] = {}
                     mini_active_mu_ids: list[int] = []
                     mini_active_mu_ids_tensor: torch.Tensor | None = None
+                    micro_debug_idx = 0
                     if daro_enabled:
                         mini_mask = mini_batch.batch.get("response_mask", None)
                         mini_rewards = mini_batch.batch.get("token_level_rewards", None)
@@ -1174,10 +1297,26 @@ def _patch_dp_actor_update_policy() -> None:
                         mini_batch.batch["daro_inv_group_tokens_row"] = mini_inv_group_tokens_row
 
                         if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                            bin_token_counts_debug = {
+                                int(k): float(v) for k, v in sorted(bin_token_counts.items(), key=lambda kv: kv[0])
+                            }
+                            valid_rows = mini_mu_id_row[mini_mu_id_row >= 0]
+                            if valid_rows.numel() > 0:
+                                bincount = torch.bincount(valid_rows, minlength=daro_num_bins).detach().cpu().tolist()
+                            else:
+                                bincount = [0] * daro_num_bins
+                            preview_n = min(8, int(mini_mu_id_row.shape[0]))
                             print(
                                 "[composer-debug][daro] mini_batch context: "
                                 f"prompts={len(groups)} rows={len(mini_uid_list)} "
                                 f"active_bins={mini_active_mu_ids}"
+                            )
+                            print(
+                                "[composer-debug][daro] mini_batch math: "
+                                f"N_mu={bin_token_counts_debug} "
+                                f"row_bin_counts={bincount} "
+                                f"mu_id_row[:{preview_n}]={mini_mu_id_row[:preview_n].detach().cpu().tolist()} "
+                                f"inv_N_row[:{preview_n}]={mini_inv_group_tokens_row[:preview_n].detach().cpu().tolist()}"
                             )
 
                     if self.config.use_dynamic_bsz:
@@ -1295,6 +1434,16 @@ def _patch_dp_actor_update_policy() -> None:
                                 loss_extra_kwargs["composer_daro_inv_group_tokens_row"] = inv_group_tokens_row
                                 loss_extra_kwargs["daro_active_mu_ids"] = active_mu_ids
                                 loss_extra_kwargs["composer_daro_active_mu_ids"] = active_mu_ids
+                                if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                                    preview_n = min(8, int(mu_id_row.shape[0]))
+                                    print(
+                                        "[composer-debug][daro] micro_batch payload: "
+                                        f"micro_idx={micro_debug_idx} "
+                                        f"B_micro={int(response_mask.shape[0])} "
+                                        f"active_mu_ids={active_mu_ids.detach().cpu().tolist()} "
+                                        f"mu_id_row[:{preview_n}]={mu_id_row[:preview_n].detach().cpu().tolist()} "
+                                        f"inv_N_row[:{preview_n}]={inv_group_tokens_row[:preview_n].detach().cpu().tolist()}"
+                                    )
                         elif daro_enabled:
                             raise ValueError(
                                 "DARO requires uid in microbatch model_inputs."
@@ -1357,6 +1506,7 @@ def _patch_dp_actor_update_policy() -> None:
 
                         metrics["actor/pg_loss"] += pg_loss.detach().item() * loss_scale_factor
                         append_to_dict(metrics, micro_batch_metrics)
+                        micro_debug_idx += 1
 
                     grad_norm = self._optimizer_step()
                     mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
@@ -1569,6 +1719,12 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                 for k in ("clip_mode", "agg_mode", "regularizer", "reg_coef"):
                     if k in composer_cfg:
                         meta_info[f"composer_{k}"] = composer_cfg[k]
+                # Inject rollout_n so the worker can reconstruct uid grouping.
+                try:
+                    _rollout_n = self.config.actor_rollout_ref.rollout.n
+                    meta_info["rollout_n"] = int(_rollout_n)
+                except Exception:
+                    pass
                 injected = True
             else:
                 try:

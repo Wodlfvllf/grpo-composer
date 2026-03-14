@@ -394,6 +394,26 @@ def agg_difficulty_weighted(loss_mat, mask, config, **kwargs):
             "Expected daro_mu_id_row and daro_inv_group_tokens_row aligned to current microbatch."
         )
 
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        preview_n = min(8, int(batch_size))
+        mu_preview = mu_id_row[:preview_n].detach().cpu().tolist()
+        inv_preview = inv_group_tokens_row[:preview_n].detach().cpu().tolist()
+        active_preview = (
+            active_mu_ids.detach().cpu().tolist() if isinstance(active_mu_ids, torch.Tensor) else []
+        )
+        print(
+            "[composer-debug][difficulty_weighted] adapter inputs: "
+            f"loss_shape={tuple(loss_mat.shape)} mask_shape={tuple(mask.shape)} "
+            f"mu_shape={tuple(mu_id_row.shape)} inv_shape={tuple(inv_group_tokens_row.shape)} "
+            f"active_shape={tuple(active_mu_ids.shape) if isinstance(active_mu_ids, torch.Tensor) else 'None'}"
+        )
+        print(
+            "[composer-debug][difficulty_weighted] adapter preview: "
+            f"mu_id_row[:{preview_n}]={mu_preview} "
+            f"inv_N_row[:{preview_n}]={inv_preview} "
+            f"active_mu_ids={active_preview}"
+        )
+
     return module.aggregate(
         loss_mat,
         mask,
