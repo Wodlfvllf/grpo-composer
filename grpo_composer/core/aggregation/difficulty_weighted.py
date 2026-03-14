@@ -1,96 +1,139 @@
-"""
-DARO: Learnable Per-Difficulty Weights for Curriculum Balancing
+"""DARO difficulty-weighted aggregation."""
 
-Paper: DARO
+from __future__ import annotations
 
-Components Changed (from base GRPO):
-- Groups prompts by difficulty μ_q = (#correct) / G
-- Learnable weight w_μ per difficulty bin
-- Optimal weights inversely proportional to loss
+import os
 
-Mathematical Form:
-    Standard GRPO:
-        L = uniform average across all prompts
-
-    DARO:
-        L = Σ_{μ∈M} [w_μ * L_μ(θ) - ln(w_μ)]
-
-    Difficulty bins:
-        M = {1/G, 2/G, ..., (G-1)/G}
-        Excludes μ=0 and μ=1 (zero gradient)
-
-    Optimal weights:
-        w*_μ ∝ L_μ^{-1}   (inverse loss weighting)
-
-    Per-group normalization:
-        Ω_μ = 1/L_μ where L_μ = total tokens in difficulty group
-
-Effect:
-    Balances learning across difficulty levels.
-    Prevents easy/hard prompts from dominating gradients.
-"""
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
+from torch import nn
+
 from .base import AggregationFunction
 
 
 class DifficultyWeightedAggregation(AggregationFunction):
-    def __init__(self, num_bins: int = 10):
+    def __init__(
+        self,
+        num_bins: int = 10,
+        weight_c: float = 1.0,
+        epsilon: float = 1e-8,
+        *,
+        learnable: bool = False,
+        init_weight: float = 1.0,
+    ):
         super().__init__()
         self.num_bins = num_bins
-        self.weights = nn.Parameter(torch.ones(num_bins))
+        self.weight_c = weight_c
+        self.epsilon = epsilon
+        self.learnable = learnable
+        self.init_weight = init_weight
+        self.weight_params: nn.Parameter | None = None
+        if learnable:
+            self.weight_params = nn.Parameter(torch.full((num_bins,), float(init_weight)))
+
+    @staticmethod
+    def _debug_enabled() -> bool:
+        return os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
+
+    def _resolve_weights(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.learnable and self.weight_params is not None:
+            return F.softplus(self.weight_params.to(device=device, dtype=dtype)) + self.epsilon
+        return torch.full((self.num_bins,), float(self.weight_c), device=device, dtype=dtype)
 
     def aggregate(
         self,
-        loss_per_token: torch.Tensor,   # (B, T) — pre-computed per-token surrogate losses
-        mask: torch.Tensor,             # (B, T) — 1=valid token, 0=padding
-        rewards: torch.Tensor = None,   # (B,) — outcome reward per sequence (for difficulty binning)
+        loss_per_token: torch.Tensor,          # (B, T)
+        mask: torch.Tensor,                    # (B, T)
+        mu_id_row: torch.Tensor | None = None,               # (B,)
+        inv_group_tokens_row: torch.Tensor | None = None,    # (B,)
+        active_mu_ids: torch.Tensor | None = None,           # (M,)
         **kwargs,
     ) -> torch.Tensor:
-        """
-        Shape Flow:
-            Input:  loss_per_token (B, T), mask (B, T), rewards (B,)
-            Step 1: Group prompts into difficulty bins based on reward μ_q
-            Step 2: For each bin μ:
-                a. Extract subset of prompts (B_μ, T)
-                b. Compute per-sequence token mean loss L_μ for this subset
-            Step 3: Aggregate: Σ [w_μ * L_μ - ln(w_μ)]
-            Step 4: loss (scalar)
+        if loss_per_token.shape != mask.shape:
+            raise ValueError(f"loss/mask shape mismatch: {loss_per_token.shape} vs {mask.shape}")
 
-        Key difference: Learns per-difficulty weights to balance curriculum (DARO).
-        """
-        if rewards is None:
-            # Fallback: token mean if no rewards available for binning
-            token_count = mask.sum(dim=-1)
-            seq_loss = (loss_per_token * mask).sum(dim=-1) / (token_count + 1e-8)
-            return seq_loss.mean()
+        if mu_id_row is None:
+            mu_id_row = kwargs.get("daro_mu_id_row")
+        if inv_group_tokens_row is None:
+            inv_group_tokens_row = kwargs.get("daro_inv_group_tokens_row")
+        if active_mu_ids is None:
+            active_mu_ids = kwargs.get("daro_active_mu_ids")
 
-        B = loss_per_token.shape[0]
+        if not isinstance(mu_id_row, torch.Tensor):
+            raise ValueError("difficulty_weighted requires daro_mu_id_row (torch.Tensor [B])")
+        if not isinstance(inv_group_tokens_row, torch.Tensor):
+            raise ValueError("difficulty_weighted requires daro_inv_group_tokens_row (torch.Tensor [B])")
+        if mu_id_row.ndim != 1 or mu_id_row.shape[0] != loss_per_token.shape[0]:
+            raise ValueError(
+                f"daro_mu_id_row must be 1D [B], got {tuple(mu_id_row.shape)} for B={loss_per_token.shape[0]}"
+            )
+        if inv_group_tokens_row.ndim != 1 or inv_group_tokens_row.shape[0] != loss_per_token.shape[0]:
+            raise ValueError(
+                "daro_inv_group_tokens_row must be 1D [B], got "
+                f"{tuple(inv_group_tokens_row.shape)} for B={loss_per_token.shape[0]}"
+            )
 
-        # Per-sequence token mean loss
-        # mask.sum(dim=-1): (B, T) → (B,)
-        # (loss_per_token * mask).sum(dim=-1): (B, T) → (B,)
-        # seq_loss: (B,) / (B,) → (B,)
-        token_count = mask.sum(dim=-1)
-        seq_loss = (loss_per_token * mask).sum(dim=-1) / (token_count + 1e-8)
+        device = loss_per_token.device
+        dtype = loss_per_token.dtype
+        mu_id_row = mu_id_row.to(device=device, dtype=torch.long)
+        inv_group_tokens_row = inv_group_tokens_row.to(device=device, dtype=dtype)
 
-        # Bin sequences by difficulty (reward magnitude → difficulty proxy)
-        # Higher reward = easier, lower = harder
-        # groups[bin_idx] = list of sequence indices in that bin
-        groups = [[] for _ in range(self.num_bins)]
-        for i in range(B):
-            # Assuming rewards are in [0, 1] range for binning
-            difficulty = torch.clamp(rewards[i], 0.0, 1.0).item()
-            bin_idx = min(int(difficulty * self.num_bins), self.num_bins - 1)
-            groups[bin_idx].append(i)
+        s_j = (loss_per_token * mask).sum(dim=-1)  # (B,)
 
-        # Weighted aggregation: Σ [w_μ * L_μ - ln(w_μ)]
-        # Excludes μ=0 (all wrong) and μ=num_bins-1 (all correct) — zero gradient
-        total_loss = torch.tensor(0.0, device=loss_per_token.device)
-        for bin_idx, indices in enumerate(groups):
-            if len(indices) == 0 or bin_idx == 0 or bin_idx == self.num_bins - 1:
-                continue
-            bin_loss = seq_loss[indices].mean()
-            total_loss = total_loss + self.weights[bin_idx] * bin_loss - torch.log(self.weights[bin_idx].clamp(min=1e-8))
+        valid_rows = (
+            (mu_id_row >= 0)
+            & (mu_id_row < self.num_bins)
+            & torch.isfinite(inv_group_tokens_row)
+            & (inv_group_tokens_row > 0)
+        )
+        if valid_rows.any():
+            mu_valid = mu_id_row[valid_rows]
+            inv_valid = inv_group_tokens_row[valid_rows]
+            s_valid = s_j[valid_rows]
+        else:
+            mu_valid = torch.empty((0,), device=device, dtype=torch.long)
+            inv_valid = torch.empty((0,), device=device, dtype=dtype)
+            s_valid = torch.empty((0,), device=device, dtype=dtype)
+
+        if active_mu_ids is None:
+            active_mu_ids = torch.unique(mu_valid, sorted=True)
+        elif isinstance(active_mu_ids, torch.Tensor):
+            active_mu_ids = active_mu_ids.to(device=device, dtype=torch.long).reshape(-1)
+        else:
+            active_mu_ids = torch.as_tensor(active_mu_ids, device=device, dtype=torch.long).reshape(-1)
+
+        if active_mu_ids.numel() > 0:
+            active_mu_ids = torch.unique(active_mu_ids, sorted=True)
+            active_mu_ids = active_mu_ids[(active_mu_ids >= 0) & (active_mu_ids < self.num_bins)]
+
+        all_weights = self._resolve_weights(device=device, dtype=dtype)
+
+        if s_valid.numel() == 0:
+            loss_main = s_j.sum() * 0.0
+        else:
+            row_weights = all_weights.index_select(0, mu_valid)
+            loss_main = (row_weights * inv_valid * s_valid).sum()
+
+        if active_mu_ids.numel() == 0:
+            loss_reg = s_j.sum() * 0.0
+        else:
+            active_weights = all_weights.index_select(0, active_mu_ids)
+            loss_reg = -torch.log(active_weights).sum()
+
+        total_loss = loss_main + loss_reg
+
+        if self._debug_enabled():
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"B={loss_per_token.shape[0]} active_rows={int(valid_rows.sum().item())} "
+                f"active_bins={active_mu_ids.detach().cpu().tolist()} "
+                f"learnable={self.learnable}"
+            )
+            print(
+                "[composer-debug][difficulty_weighted] "
+                f"loss_main={float(loss_main.detach().item()):.6f} "
+                f"loss_reg={float(loss_reg.detach().item()):.6f} "
+                f"total={float(total_loss.detach().item()):.6f}"
+            )
 
         return total_loss
