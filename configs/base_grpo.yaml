@@ -12,6 +12,8 @@ actor_rollout_ref:
   actor:
     policy_loss:
       loss_mode: "composer"
+  rollout:
+    n: 8
 
 composer:
   clip_mode: "symmetric"           # Standard PPO clip(ρ, 1-ε, 1+ε)
