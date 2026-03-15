@@ -30,8 +30,10 @@
 algorithm:
   adv_estimator: grpo
 actor_rollout_ref:
+  rollout:
+    n: 8
   actor:
-    info_alpha: 1.0
+    ppo_micro_batch_size_per_gpu: 8
     policy_loss:
       loss_mode: composer
 composer:
@@ -39,5 +41,6 @@ composer:
   clip_mode: symmetric
   agg_mode: token_mean
   regularizer: mutual_info
+  info_alpha: 1.0
   reg_coef: 0.1
   composer_flow: info_grpo

@@ -21,9 +21,12 @@
 
 algorithm:
   adv_estimator: multi_scale_grpo
+  ms_tau_min: 2
+  ms_num_scales: 4
+  ms_samples_per_scale: 4
+  ms_weights: null
 actor_rollout_ref:
   actor:
-    ms_tau_min: 2
     policy_loss:
       loss_mode: composer
 composer:
