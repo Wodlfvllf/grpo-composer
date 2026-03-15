@@ -319,8 +319,23 @@ def _apply_multi_reward_transform(data: Any, config: Any) -> None:
     multi_rewards = _maybe_get(data, "composer_multi_rewards")
     if multi_rewards is None:
         multi_rewards = _maybe_get(data, "multi_rewards")
+    
+    response_mask = data.batch["response_mask"]
+    
+    # [SMOKE TEST MOCK] If no multi-rewards were passed from the driver, synthesize a mock (B, 2) tensor!
     if multi_rewards is None:
-        return
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print("🧮 [DEBUG] GDPO: No multi_rewards found. Synthesizing mock (B, 2) multi-rewards for smoke test!")
+        
+        token_level_rewards = data.batch["token_level_rewards"]
+        sequence_rewards = _sequence_rewards_from_token(token_level_rewards, response_mask)
+        sequence_correctness = _resolve_sequence_correctness(data, sequence_rewards)
+        
+        # Accuracy is dim 0. Let's make a dummy "Format" reward for dim 1 (randomly -1 or 1)
+        mock_format_rewards = torch.where(torch.rand_like(sequence_correctness) > 0.5, 1.0, -1.0)
+        
+        multi_rewards = torch.stack([sequence_correctness, mock_format_rewards], dim=1)
+
 
     if isinstance(multi_rewards, np.ndarray):
         multi_rewards = torch.from_numpy(multi_rewards)
@@ -1739,6 +1754,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         """Override fit to guarantee compute_advantage patching within the execution loop."""
         import verl.trainer.ppo.ray_trainer as ray_trainer_module
         import sys
+        from .info_grpo_hook import InfoGRPORolloutAugmentor
 
         # Force intercepting the locally scoped compute_advantage inside ray_trainer
         original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
@@ -1747,7 +1763,15 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             ray_trainer_module.compute_advantage = composer_compute_advantage
             if "verl.trainer.ppo.ray_trainer" in sys.modules:
                 sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = composer_compute_advantage
-                
+            
+            if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
+                if self.async_rollout_mode:
+                    original_method = self.async_rollout_manager.generate_sequences
+                    self.async_rollout_manager.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
+                else:
+                    original_method = self.actor_rollout_wg.generate_sequences
+                    self.actor_rollout_wg.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
+            
             super().fit()
         finally:
             if original_compute_advantage is not None:
