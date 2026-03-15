@@ -283,7 +283,17 @@ def compute_multi_scale_advantage(
     group_indices = _collect_group_indices(index, scores.shape[0])
 
     tau_min = int(_config_get(config, "ms_tau_min", 2))
-    fn = MultiScaleAdvantageFunction(tau_min=tau_min, epsilon=epsilon)
+    num_scales = int(_config_get(config, "ms_num_scales", 4))
+    samples_per_scale = int(_config_get(config, "ms_samples_per_scale", 4))
+    weights = _config_get(config, "ms_weights", None)
+    
+    fn = MultiScaleAdvantageFunction(
+        tau_min=tau_min, 
+        num_scales=num_scales,
+        samples_per_scale=samples_per_scale,
+        weights=weights,
+        epsilon=epsilon
+    )
     with torch.no_grad():
         sequence_adv = _compute_groupwise(scores, group_indices, fn.compute_advantages)
     return _broadcast_sequence_advantages(sequence_adv, response_mask)
