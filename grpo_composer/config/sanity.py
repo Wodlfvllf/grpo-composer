@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-
+import os
 import yaml
 
 
@@ -267,10 +267,16 @@ def run_preflight_sanity_checks(
         )
 
     if regularizer == "mutual_info" or algorithm_flow == "info_grpo":
-        errors.append(
-            "Info-GRPO/mutual_info regularization requires augmented rollout tensors (log_probs_aug/mask_aug). "
-            "Default launcher path does not generate these tensors."
-        )
+        # Microbatching safety check
+        micro_batch_size = _get_nested(effective, "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu")
+        if micro_batch_size is not None:
+            micro_batch_size = int(micro_batch_size)
+            if micro_batch_size % int(rollout_n) != 0:
+                errors.append(
+                    f"Info-GRPO requires actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu ({micro_batch_size}) "
+                    f"to be a multiple of actor_rollout_ref.rollout.n ({int(rollout_n)}) so that "
+                    "original and augmented trajectories are not split across microbatches."
+                )
 
     signal_rules = _collect_required_signal_rules(effective)
     if signal_rules:
