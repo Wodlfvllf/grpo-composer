@@ -1797,9 +1797,13 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     self.actor_rollout_wg.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
             
             # Hook reference rewards if PVPO or if the config requests it dynamically
-            needs_reference_reward = self.config.algorithm.get("composer_flow", "") in ["pvpo_grpo", "gapo_grpo"]
+            flow_names = _parse_flow_list(self.config)
+            needs_reference_reward = any(
+                name in ["pvpo", "pvpo_grpo", "gapo", "gapo_grpo"] or "reference_rewards" in name 
+                for name in flow_names
+            )
             
-            if needs_reference_reward or "reference_rewards" in self.composer_config_dict.get("composer_flow", ""):
+            if needs_reference_reward:
                 from .reference_reward_hook import ReferenceRewardHook
                 orig_compute = self._compute_or_extract_reward
                 self._compute_or_extract_reward = ReferenceRewardHook.wrap_compute_or_extract_reward(
