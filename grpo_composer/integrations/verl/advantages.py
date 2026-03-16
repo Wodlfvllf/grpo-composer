@@ -342,12 +342,35 @@ def compute_static_value_advantage(
         else:
             seq_ref = ref_rewards
 
+        from grpo_composer.core.advantages.pvpo import StaticValueAdvantageFunction
         fn = StaticValueAdvantageFunction(epsilon=epsilon)
         sequence_adv = torch.zeros_like(scores)
+        
+        # Verify alignment visually if debug is on
+        import os
+        is_debug = os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
+        debug_printed = 0
+        
+        # Only fetch UIDs if debug is requested, to minimize overhead
+        uids = None
+        if is_debug and "data" in kwargs and hasattr(kwargs["data"], "non_tensor_batch"):
+            uids = kwargs["data"].non_tensor_batch.get("uid", None)
+        
         for indices in group_indices.values():
             idx = torch.tensor(indices, device=scores.device, dtype=torch.long)
             group_scores = scores[idx].unsqueeze(0)
             group_ref = seq_ref[idx].unsqueeze(0)
+            
+            if is_debug and debug_printed < 2:
+                # If UIDs are correctly ordered and grouped, ALL UIDs in exactly this `indices` 
+                # list must be identical for a given prompt!
+                if uids is not None:
+                    group_uids = [uids[i] for i in indices]
+                    print(f"[grpo_composer-debug] Prompt {debug_printed} - UIDs in group: {group_uids}")
+                print(f"[grpo_composer-debug] Prompt {debug_printed} - Actor Rewards: {group_scores.squeeze(0).tolist()}")
+                print(f"[grpo_composer-debug] Prompt {debug_printed} - Ref Rewards:   {group_ref.squeeze(0).tolist()}")
+                debug_printed += 1
+                
             group_adv = fn.compute_advantages(group_scores, group_ref)
             if group_adv.ndim != 2 or group_adv.shape != group_scores.shape:
                 raise ValueError(
