@@ -14,9 +14,8 @@ actor_rollout_ref:
   actor:
     policy_loss:
       loss_mode: composer
-
   rollout:
-    n: 8
+    n: 4
 composer:
   clip_ratio: 0.2
   clip_mode: symmetric
