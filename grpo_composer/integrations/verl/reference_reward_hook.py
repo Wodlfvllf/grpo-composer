@@ -1,12 +1,13 @@
 import copy
 from typing import Any
+import torch
 
 class ReferenceRewardHook:
     """
-    Hooks into veRL's `_compute_or_extract_reward` to dynamically generate 
+    Hooks into veRL's `_compute_or_extract_reward` or `compute_reward` to dynamically generate 
     rollouts from the reference model and compute their rewards before computing 
     the active policy's rewards. The resulting tensor is attached 
-    to `batch.batch['reference_rewards']`.
+    to `batch.non_tensor_batch['reference_rewards']`.
     """
 
     @staticmethod
@@ -52,3 +53,36 @@ class ReferenceRewardHook:
             return original_method(batch, reward_fn=reward_fn, return_dict=return_dict, **kwargs)
 
         return hooked_compute_or_extract_reward
+
+    @staticmethod
+    def wrap_compute_reward(original_method: Any, trainer: Any):
+        def hooked_compute_reward(batch, reward_fn):
+            # Only do this if it hasn't been done for this batch yet and we have a reference policy
+            if "reference_rewards" not in batch.batch and trainer.use_reference_policy:
+                # 1. Create a baseline batch
+                ref_batch = copy.deepcopy(batch)
+                
+                # Check config to see if we should sample or use greedy parsing
+                do_sample = trainer.config.get("reference_rollout_do_sample", False)
+                ref_batch.meta_info["do_sample"] = do_sample
+                
+                # 2. Generate sequences from the Reference Policy DataParallel WorkerGroup
+                ref_output = trainer.ref_policy_wg.generate_sequences(ref_batch)
+                
+                # 3. Union prompts and generated responses
+                ref_eval_batch = batch.union(ref_output)
+                
+                # 4. Compute reward on the reference rollouts
+                ref_reward_tensor, _ = original_method(ref_eval_batch, reward_fn)
+                
+                # 5. Attach the reference reward explicitly to the active policy's non_tensor batch
+                import numpy as np
+                if isinstance(ref_reward_tensor, torch.Tensor):
+                    batch.non_tensor_batch["reference_rewards"] = ref_reward_tensor.cpu().numpy()
+                else:
+                    batch.non_tensor_batch["reference_rewards"] = np.asarray(ref_reward_tensor)
+
+            # 6. Proceed with the original compute_reward for the actor policy
+            return original_method(batch, reward_fn)
+
+        return hooked_compute_reward

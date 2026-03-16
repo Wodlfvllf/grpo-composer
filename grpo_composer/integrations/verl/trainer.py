@@ -1782,6 +1782,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
         # Force intercepting the locally scoped compute_advantage inside ray_trainer
         original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
+        original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
         
         try:
             ray_trainer_module.compute_advantage = composer_compute_advantage
@@ -1805,10 +1806,18 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             
             if needs_reference_reward:
                 from .reference_reward_hook import ReferenceRewardHook
-                orig_compute = self._compute_or_extract_reward
-                self._compute_or_extract_reward = ReferenceRewardHook.wrap_compute_or_extract_reward(
-                    orig_compute, self
-                )
+                if hasattr(self, "_compute_or_extract_reward"):
+                    orig_compute = self._compute_or_extract_reward
+                    self._compute_or_extract_reward = ReferenceRewardHook.wrap_compute_or_extract_reward(
+                        orig_compute, self
+                    )
+                else:
+                    from verl.trainer.ppo.core_algos import compute_reward
+                    orig_compute = compute_reward
+                    import verl.trainer.ppo.ray_trainer as ray_trainer_module
+                    ray_trainer_module.compute_reward = ReferenceRewardHook.wrap_compute_reward(
+                        orig_compute, self
+                    )
 
             super().fit()
         finally:
@@ -1816,6 +1825,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                 ray_trainer_module.compute_advantage = original_compute_advantage
                 if "verl.trainer.ppo.ray_trainer" in sys.modules:
                     sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = original_compute_advantage
+            if original_compute_reward is not None:
+                ray_trainer_module.compute_reward = original_compute_reward
 
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)
