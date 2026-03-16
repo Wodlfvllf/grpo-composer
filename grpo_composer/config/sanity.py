@@ -162,12 +162,9 @@ def _collect_required_signal_rules(config: Mapping[str, Any]) -> list[dict[str, 
     pipeline = _normalize_string_list(_get_nested(config, "composer.composer_reward_pipeline", []))
 
     if adv_estimator == "static_value_grpo":
-        rules.append(
-            {
-                "reason": "adv_estimator=static_value_grpo",
-                "any_of": ["reference_rewards", "composer_reference_rewards", "ref_rewards"],
-            }
-        )
+        # PVPO dynamically computes reference rewards on the rollout loop
+        # using ReferenceRewardHook, so they are not required in the static dataset.
+        pass
 
     if adv_estimator == "stratified_grpo":
         rules.append(
