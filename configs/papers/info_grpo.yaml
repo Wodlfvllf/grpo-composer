@@ -44,3 +44,8 @@ composer:
   info_alpha: 1.0
   reg_coef: 0.1
   composer_flow: info_grpo
+
+trainer:
+  n_gpus_per_node: 1
+  balance_batch: false # CRITICAL FOR INFO-GRPO
+
