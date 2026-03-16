@@ -598,6 +598,11 @@ def _collect_adv_optional_kwargs(data: Any) -> dict[str, Any]:
         ("stratum_ids", "strata"),
     ]:
         value = _maybe_get(data, batch_key)
+        
+        # If veRL stripped it from `.batch`, check `.non_tensor_batch` (used for PVPO reference hook)
+        if value is None and hasattr(data, "non_tensor_batch") and batch_key in data.non_tensor_batch:
+            value = data.non_tensor_batch[batch_key]
+            
         if value is not None:
             kwargs[kwarg_key] = value
 
@@ -706,6 +711,12 @@ def composer_compute_advantage(
         "config": config,
     }
     adv_kwargs.update(_collect_adv_optional_kwargs(data))
+    
+    # Optional explicitly passed variables for custom estimators like PVPO
+    if "reference_rewards" in data.batch:
+        adv_kwargs["reference_rewards"] = data.batch["reference_rewards"]
+    elif "composer_reference_rewards" in data.batch:
+        adv_kwargs["composer_reference_rewards"] = data.batch["composer_reference_rewards"]
 
     advantages, returns = adv_estimator_fn(**adv_kwargs)
     data.batch["advantages"] = advantages
@@ -1674,6 +1685,19 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                 "group_learnable + lambda_learnable=true needs worker-side optimizer plumbing. "
                 "Set lambda_learnable=false for now or extend actor worker update path."
             )
+            
+        # CRITICAL FIX: veRL's `balance_batch` randomly shuffles batch rows across DP ranks to balance token loads. 
+        # This completely destroys the contiguous `num_repeat` interleaving that native GRPO and 
+        # *every single composer advantage estimator* relies on to calculate relative advantages.
+        # We MUST forcibly disable balance_batch globally to preserve grouped prompt rollouts.
+        if hasattr(self.config, "trainer"):
+            if getattr(self.config.trainer, "balance_batch", False):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[grpo_composer] FORCIBLY DISABLING trainer.balance_batch! "
+                    "Batch reshuffling breaks mathematical grouping (num_repeat) for GRPO advantage estimation."
+                )
+                self.config.trainer.balance_batch = False
 
     def _validate_actor_batch_contract(self, batch: Any) -> None:
         """Fail-fast validation before veRL microbatch update begins."""
@@ -1772,6 +1796,16 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     original_method = self.actor_rollout_wg.generate_sequences
                     self.actor_rollout_wg.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
             
+            # Hook reference rewards if PVPO or if the config requests it dynamically
+            needs_reference_reward = self.config.algorithm.get("composer_flow", "") in ["pvpo_grpo", "gapo_grpo"]
+            
+            if needs_reference_reward or "reference_rewards" in self.composer_config_dict.get("composer_flow", ""):
+                from .reference_reward_hook import ReferenceRewardHook
+                orig_compute = self._compute_or_extract_reward
+                self._compute_or_extract_reward = ReferenceRewardHook.wrap_compute_or_extract_reward(
+                    orig_compute, self
+                )
+
             super().fit()
         finally:
             if original_compute_advantage is not None:
