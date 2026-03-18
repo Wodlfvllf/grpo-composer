@@ -1812,7 +1812,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                         orig_compute, self
                     )
                 else:
-                    from verl.trainer.ppo.core_algos import compute_reward
+                    from verl.trainer.ppo.reward import compute_reward
                     orig_compute = compute_reward
                     import verl.trainer.ppo.ray_trainer as ray_trainer_module
                     ray_trainer_module.compute_reward = ReferenceRewardHook.wrap_compute_reward(
