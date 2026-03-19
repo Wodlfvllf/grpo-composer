@@ -32,11 +32,12 @@ from .base import AggregationFunction
 class WeightedTokenAggregation(AggregationFunction):
     def __init__(
         self,
-        alpha: float = 1.0,
-        tau: float = 1.0,
-        mu: float = 0.5,
-        clip_lower: float = 0.5,
-        clip_upper: float = 1.5,
+        alpha: float = 2.0,
+        tau: float = 9.0,
+        mu: float = 0.25,
+        clip_lower: float = 1.0,
+        clip_upper: float = 1.4,
+        detach_log_probs: bool = True,
     ):
         super().__init__()
         self.alpha = alpha
@@ -44,12 +45,14 @@ class WeightedTokenAggregation(AggregationFunction):
         self.mu = mu
         self.clip_lower = clip_lower
         self.clip_upper = clip_upper
+        self.detach_log_probs = detach_log_probs
 
     def aggregate(
         self,
         loss_per_token: torch.Tensor,       # (B, T) — pre-computed per-token surrogate losses
         mask: torch.Tensor,                 # (B, T) — 1=valid token, 0=padding
         log_probs: torch.Tensor = None,     # (B, T) — current policy log-probs (for weight computation)
+        token_weights: torch.Tensor = None, # (B, T) — precomputed weights (optional)
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -63,28 +66,34 @@ class WeightedTokenAggregation(AggregationFunction):
 
         Key difference: Applies probability-based weights to down-weight confident tokens.
         """
-        if log_probs is None:
+        if token_weights is None and log_probs is None:
             # Fallback: global token mean without weighting
             total_loss = (loss_per_token * mask).sum()
             return total_loss / (mask.sum() + 1e-8)
 
-        # Token-level confidence weights
-        # exp(log_probs): (B, T) → (B, T)
-        token_probs = torch.exp(log_probs)
+        if token_weights is None:
+            if self.detach_log_probs:
+                log_probs = log_probs.detach()
 
-        # Scale by temperature
-        # token_probs / τ: (B, T) → (B, T)
-        scaled = token_probs / self.tau
+            # Token-level confidence weights
+            # exp(log_probs): (B, T) → (B, T)
+            token_probs = torch.exp(log_probs)
 
-        # Compute weights: clip(α * (σ(scaled) - μ), L, U)
-        # sigmoid(scaled): (B, T) → (B, T)
-        # α * (sigmoid - μ): (B, T) → (B, T)
-        # clamp: (B, T) → (B, T)
-        weights = torch.clamp(
-            self.alpha * (torch.sigmoid(scaled) - self.mu),
-            self.clip_lower,
-            self.clip_upper,
-        )
+            # Scale by temperature
+            # token_probs / τ: (B, T) → (B, T)
+            scaled = token_probs / self.tau
+
+            # Compute weights: clip(α * (σ(scaled) - μ), L, U)
+            # sigmoid(scaled): (B, T) → (B, T)
+            # α * (sigmoid - μ): (B, T) → (B, T)
+            # clamp: (B, T) → (B, T)
+            weights = torch.clamp(
+                self.alpha * (torch.sigmoid(scaled) - self.mu),
+                self.clip_lower,
+                self.clip_upper,
+            )
+        else:
+            weights = token_weights
 
         # Weighted loss with global token normalization
         # loss_per_token * weights * mask: (B, T) * (B, T) * (B, T) → (B, T)
