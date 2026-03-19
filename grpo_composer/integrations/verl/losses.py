@@ -24,7 +24,12 @@ from .loss_context import (
     set_composer_config,
 )
 from .regularisation_registery import REG_REGISTRY
-from .utils import _as_tensor, _infer_sequence_rewards, _validate_tensor_shape
+from .utils import (
+    _as_tensor,
+    _compute_tr_token_weights,
+    _infer_sequence_rewards,
+    _validate_tensor_shape,
+)
 
 
 
@@ -107,6 +112,10 @@ def compute_composer_loss(
     clip_fn = CLIP_REGISTRY.get(clip_mode)
     if clip_fn is None:
         raise ValueError(f"Unknown clip_mode: {clip_mode}. Options: {list(CLIP_REGISTRY.keys())}")
+    tr_token_weights = None
+    if clip_mode == "weighted_trust":
+        tr_token_weights = _compute_tr_token_weights(log_prob, config, composer_dict=composer_dict)
+
     # (B, T) — clipped ratio, e.g. symmetric → clamp(ratio, 1-ε, 1+ε)
     clipped_ratio = clip_fn(
         ratio,
@@ -114,11 +123,17 @@ def compute_composer_loss(
         log_prob,
         response_mask,
         config,
+        tr_token_weights=tr_token_weights,
         **kwargs,
     )
 
+    if clip_mode == "weighted_trust":
+        ratio_for_objective = ratio * tr_token_weights
+    else:
+        ratio_for_objective = ratio
+
     # (B, T) — PPO surrogate losses (negative because we maximize objective)
-    pg_losses1 = -advantages * ratio             # unclipped: -A_i · ρ_{i,t}
+    pg_losses1 = -advantages * ratio_for_objective  # unclipped: -A_i · ρ_{i,t} (weighted for TR-GRPO)
     pg_losses2 = -advantages * clipped_ratio      # clipped:   -A_i · clip(ρ_{i,t})
     pg_losses = torch.maximum(pg_losses1, pg_losses2)  # pessimistic bound
 
@@ -146,6 +161,8 @@ def compute_composer_loss(
     runtime_context = dict(kwargs)
     runtime_context.update(get_composer_batch_context())
     runtime_context["log_prob"] = log_prob
+    if tr_token_weights is not None:
+        runtime_context["tr_token_weights"] = tr_token_weights
     if sequence_rewards is not None:
         runtime_context["sequence_rewards"] = sequence_rewards
     runtime_context["composer_config"] = composer_dict
@@ -187,4 +204,13 @@ def compute_composer_loss(
     }
     if sequence_rewards is not None:
         metrics["actor/sequence_reward_mean"] = sequence_rewards.mean().detach().item()
+
+    group_learnable_module = runtime_context.get("composer_group_learnable_module")
+    if group_learnable_module is not None:
+        lambda_value = getattr(group_learnable_module, "lambda_", None)
+        if isinstance(lambda_value, torch.Tensor) and lambda_value.numel() == 1:
+            metrics["actor/lambda_value"] = lambda_value.detach().item()
+        r_value = getattr(group_learnable_module, "r", None)
+        if isinstance(r_value, torch.Tensor) and r_value.numel() == 1:
+            metrics["actor/lambda_r"] = r_value.detach().item()
     return pg_loss, metrics
