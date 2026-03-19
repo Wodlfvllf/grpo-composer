@@ -47,12 +47,14 @@ class WeightedTrustRegionClippingMechanism(ClippingMechanism):
     
     def __init__(
         self,
-        alpha: float = 1.0,
-        tau: float = 1.0,
-        mu: float = 0.5,
-        weight_lower: float = 0.5,
-        weight_upper: float = 1.5,
-        clip_epsilon: float = 0.2
+        alpha: float = 2.0,
+        tau: float = 9.0,
+        mu: float = 0.25,
+        weight_lower: float = 1.0,
+        weight_upper: float = 1.4,
+        clip_epsilon: float = 0.2,
+        clip_epsilon_lower: float | None = None,
+        clip_epsilon_upper: float | None = None,
     ):
         """
         Args:
@@ -61,16 +63,23 @@ class WeightedTrustRegionClippingMechanism(ClippingMechanism):
             mu: Offset for centering sigmoid output
             weight_lower: Lower bound for token weights (L)
             weight_upper: Upper bound for token weights (U)
-            clip_epsilon: Base epsilon for ratio clipping
+            clip_epsilon: Base epsilon for ratio clipping (fallback for symmetric clipping)
+            clip_epsilon_lower: Lower trust-region epsilon (ε_l)
+            clip_epsilon_upper: Upper trust-region epsilon (ε_h)
         """
         self.alpha = alpha
         self.tau = tau
         self.mu = mu
         self.weight_lower = weight_lower
         self.weight_upper = weight_upper
-        self.clip_epsilon = clip_epsilon
-    
-    def compute_token_weights(self, token_probs: torch.Tensor) -> torch.Tensor:
+        self.clip_epsilon_lower = (
+            clip_epsilon if clip_epsilon_lower is None else clip_epsilon_lower
+        )
+        self.clip_epsilon_upper = (
+            clip_epsilon if clip_epsilon_upper is None else clip_epsilon_upper
+        )
+
+    def compute_token_weights(self, token_probs: torch.Tensor, detach: bool = True) -> torch.Tensor:
         """
         Compute per-token weights based on model confidence.
         
@@ -82,6 +91,9 @@ class WeightedTrustRegionClippingMechanism(ClippingMechanism):
         Returns:
             weights: (B, G, T) per-token weights
         """
+        if detach:
+            token_probs = token_probs.detach()
+
         # Scale probabilities by temperature
         scaled_probs = token_probs / self.tau
         
@@ -126,8 +138,8 @@ class WeightedTrustRegionClippingMechanism(ClippingMechanism):
         # The effective bounds are weight-adjusted
         clipped = torch.clamp(
             weighted_ratio,
-            1 - self.clip_epsilon,
-            1 + self.clip_epsilon
+            1 - self.clip_epsilon_lower,
+            1 + self.clip_epsilon_upper,
         )
         
         return clipped
@@ -154,8 +166,8 @@ class WeightedTrustRegionClippingMechanism(ClippingMechanism):
         
         # Dynamic bounds: more confident tokens get tighter bounds
         # Less confident tokens get looser bounds
-        epsilon_lower = self.clip_epsilon / weights
-        epsilon_upper = self.clip_epsilon * weights
+        epsilon_lower = self.clip_epsilon_lower / weights
+        epsilon_upper = self.clip_epsilon_upper * weights
         
         # Per-token clipping
         lower_bound = 1 - epsilon_lower
