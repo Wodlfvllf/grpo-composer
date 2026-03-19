@@ -802,13 +802,22 @@ _FLOW_PLUGIN_REGISTRY: dict[str, type[FlowPlugin]] = {
 
 def _parse_flow_list(config: Any) -> list[str]:
     algorithm = _cfg_get(config, "algorithm", None)
+    composer = _cfg_get(config, "composer", None)
     flow = _cfg_get(algorithm, "composer_flow", None)
     if flow is None:
         flow = _cfg_get(algorithm, "flow", None)
+    if flow is None:
+        flow = _cfg_get(composer, "composer_flow", None)
+    if flow is None:
+        flow = _cfg_get(composer, "flow", None)
 
     plugin_names = _cfg_get(algorithm, "composer_flow_plugins", None)
     if plugin_names is None:
         plugin_names = _cfg_get(algorithm, "flow_plugins", None)
+    if plugin_names is None:
+        plugin_names = _cfg_get(composer, "composer_flow_plugins", None)
+    if plugin_names is None:
+        plugin_names = _cfg_get(composer, "flow_plugins", None)
 
     parsed_plugins: list[str] = []
     if isinstance(plugin_names, str):
@@ -1776,6 +1785,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
     def fit(self) -> None:
         """Override fit to guarantee compute_advantage patching within the execution loop."""
+        import copy
+        import ray
         import verl.trainer.ppo.ray_trainer as ray_trainer_module
         import sys
         from .info_grpo_hook import InfoGRPORolloutAugmentor
@@ -1783,12 +1794,82 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         # Force intercepting the locally scoped compute_advantage inside ray_trainer
         original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
         original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
-        
+
+        composer_cfg = getattr(self, "composer_config_dict", {})
+        ref_reward_source = str(composer_cfg.get("reference_reward_source", "auto")).strip().lower()
+
+        def _has_reference_rewards(data: Any) -> bool:
+            if hasattr(data, "batch") and "reference_rewards" in data.batch:
+                return True
+            non_tensor = getattr(data, "non_tensor_batch", None)
+            return isinstance(non_tensor, Mapping) and "reference_rewards" in non_tensor
+
+        def _set_do_sample_flag(data: Any, do_sample: bool) -> None:
+            meta_info = getattr(data, "meta_info", None)
+            if meta_info is None:
+                try:
+                    data.meta_info = {}
+                    meta_info = data.meta_info
+                except Exception:
+                    return
+            if isinstance(meta_info, dict):
+                meta_info["do_sample"] = do_sample
+                return
+            setter = getattr(meta_info, "__setitem__", None)
+            if callable(setter):
+                try:
+                    setter("do_sample", do_sample)
+                except Exception:
+                    pass
+
+        def _generate_reference_rollout_output(ref_batch: Any) -> Any:
+            ref_wg = getattr(self, "ref_policy_wg", None)
+            fallback_to_actor = False
+            last_error: Exception | None = None
+
+            if ref_wg is not None:
+                try:
+                    return ref_wg.generate_sequences(ref_batch)
+                except Exception as exc:
+                    last_error = exc
+                    if "rollout is not registered in ActorRolloutRefWorker" not in str(exc):
+                        raise
+                    fallback_to_actor = ref_reward_source in ("auto", "actor_rollout")
+            else:
+                fallback_to_actor = ref_reward_source in ("auto", "actor_rollout")
+
+            if not fallback_to_actor and ref_wg is not None:
+                raise RuntimeError(
+                    "PVPO reference rollouts are unavailable on this veRL setup: "
+                    "the `ref` worker does not register the `rollout` mesh in `verl==0.6.5`. "
+                    "Provide `reference_rewards` in the batch, or set "
+                    "`composer.reference_reward_source=actor_rollout` for an approximate fallback."
+                ) from last_error
+            if not fallback_to_actor and ref_wg is None:
+                raise RuntimeError(
+                    "PVPO reference rollouts requested but no `ref_policy_wg` is available. "
+                    "Provide `reference_rewards` in the batch, or set "
+                    "`composer.reference_reward_source=actor_rollout` for an approximate fallback."
+                )
+
+            rollout_manager = getattr(self, "async_rollout_manager", None)
+            if rollout_manager is None:
+                rollout_manager = getattr(self, "actor_rollout_wg", None)
+            if rollout_manager is None:
+                raise RuntimeError(
+                    "Cannot compute reference rewards: no rollout manager is available for fallback generation."
+                ) from last_error
+
+            if fallback_to_actor and not getattr(self, "_pvpo_actor_rollout_fallback_warned", False):
+                print(
+                    "[grpo_composer] PVPO fallback active: using actor rollout manager for reference rewards "
+                    "(approximation, not true reference-policy rollouts)."
+                )
+                self._pvpo_actor_rollout_fallback_warned = True
+
+            return rollout_manager.generate_sequences(ref_batch)
+
         try:
-            ray_trainer_module.compute_advantage = composer_compute_advantage
-            if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = composer_compute_advantage
-            
             if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
                 if self.async_rollout_mode:
                     original_method = self.async_rollout_manager.generate_sequences
@@ -1805,19 +1886,58 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             )
             
             if needs_reference_reward:
-                from .reference_reward_hook import ReferenceRewardHook
-                if hasattr(self, "_compute_or_extract_reward"):
-                    orig_compute = self._compute_or_extract_reward
-                    self._compute_or_extract_reward = ReferenceRewardHook.wrap_compute_or_extract_reward(
-                        orig_compute, self
-                    )
-                else:
-                    from verl.trainer.ppo.reward import compute_reward
-                    orig_compute = compute_reward
-                    import verl.trainer.ppo.ray_trainer as ray_trainer_module
-                    ray_trainer_module.compute_reward = ReferenceRewardHook.wrap_compute_reward(
-                        orig_compute, self
-                    )
+                def hooked_compute_advantage(data, adv_estimator, *args, **kwargs):
+                    debug = os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
+                    if debug:
+                        print(f"[grpo_composer-debug] hooked_compute_advantage data={type(data)}")
+
+                    if not _has_reference_rewards(data):
+                        ref_batch = copy.deepcopy(data)
+                        do_sample = bool(getattr(self.config, "reference_rollout_do_sample", False))
+                        _set_do_sample_flag(ref_batch, do_sample)
+
+                        ref_output = _generate_reference_rollout_output(ref_batch)
+                        ref_eval_batch = data.union(ref_output)
+
+                        if getattr(self.config, "reward_model", None) is not None and getattr(self.config.reward_model, "launch_reward_fn_async", False):
+                            try:
+                                from verl.trainer.ppo.reward import compute_reward_async
+                            except ImportError:
+                                from verl.trainer.ppo.core_algos import compute_reward_async
+                            future_reward = compute_reward_async.remote(
+                                data=ref_eval_batch, config=self.config, tokenizer=self.tokenizer
+                            )
+                            ref_reward_tensor, _ = ray.get(future_reward)
+                        else:
+                            if hasattr(self, "_compute_or_extract_reward"):
+                                ref_reward_tensor, _ = self._compute_or_extract_reward(
+                                    ref_eval_batch, reward_fn=self.reward_fn, return_dict=False
+                                )
+                            else:
+                                try:
+                                    from verl.trainer.ppo.reward import compute_reward
+                                except ImportError:
+                                    from verl.trainer.ppo.core_algos import compute_reward
+                                ref_reward_tensor, _ = compute_reward(ref_eval_batch, self.reward_fn)
+
+                        if isinstance(ref_reward_tensor, torch.Tensor):
+                            data.non_tensor_batch["reference_rewards"] = ref_reward_tensor.cpu().numpy()
+                        else:
+                            data.non_tensor_batch["reference_rewards"] = np.asarray(ref_reward_tensor)
+
+                        if debug:
+                            shape = data.non_tensor_batch["reference_rewards"].shape
+                            print(f"[grpo_composer-debug] Added reference_rewards shape={shape}")
+
+                    return composer_compute_advantage(data, adv_estimator, *args, **kwargs)
+
+                ray_trainer_module.compute_advantage = hooked_compute_advantage
+                if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                    sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = hooked_compute_advantage
+            else:
+                ray_trainer_module.compute_advantage = composer_compute_advantage
+                if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                    sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = composer_compute_advantage
 
             super().fit()
         finally:
