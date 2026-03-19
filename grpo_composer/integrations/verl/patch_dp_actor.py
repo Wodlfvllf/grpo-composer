@@ -299,6 +299,67 @@ def _patch_dp_actor_update_policy() -> None:
             if isinstance(composer_cfg, Mapping):
                 agg_mode = composer_cfg.get("agg_mode")
 
+            # Build/inject persistent λ-GRPO aggregation module and register
+            # the learnable λ parameter in actor optimizer with its own LR.
+            if agg_mode == "group_learnable":
+                from grpo_composer.core.aggregation.group_learnable import GroupLearnableAggregation
+
+                lambda_init = float(_cfg_get(self.config, "lambda_init", 0.0))
+                lambda_r = float(_cfg_get(self.config, "lambda_r", 0.1111))
+                lambda_learnable = bool(_cfg_get(self.config, "lambda_learnable", False))
+                lambda_lr = float(_cfg_get(self.config, "lambda_lr", 0.1))
+
+                module_spec = (lambda_init, lambda_r, lambda_learnable, lambda_lr)
+                module = getattr(self, "_composer_group_learnable_module", None)
+                if module is None or getattr(self, "_composer_group_learnable_spec", None) != module_spec:
+                    module = GroupLearnableAggregation(
+                        lambda_=lambda_init,
+                        r=lambda_r,
+                        learnable=lambda_learnable,
+                    )
+                    setattr(self, "_composer_group_learnable_module", module)
+                    setattr(self, "_composer_group_learnable_spec", module_spec)
+                    setattr(self, "_composer_group_learnable_opt_registered", False)
+
+                if lambda_learnable and isinstance(getattr(module, "lambda_", None), torch.nn.Parameter):
+                    try:
+                        actor_device = next(self.actor_module.parameters()).device
+                    except Exception:
+                        actor_device = module.lambda_.device
+
+                    if module.lambda_.device != actor_device:
+                        module.lambda_ = torch.nn.Parameter(module.lambda_.detach().to(actor_device))
+                        setattr(self, "_composer_group_learnable_opt_registered", False)
+
+                    already_in_optimizer = False
+                    for param_group in self.actor_optimizer.param_groups:
+                        for param in param_group.get("params", []):
+                            if param is module.lambda_:
+                                already_in_optimizer = True
+                                break
+                        if already_in_optimizer:
+                            break
+
+                    if already_in_optimizer:
+                        setattr(self, "_composer_group_learnable_opt_registered", True)
+
+                    if not bool(getattr(self, "_composer_group_learnable_opt_registered", False)):
+                        self.actor_optimizer.add_param_group(
+                            {
+                                "params": [module.lambda_],
+                                "lr": lambda_lr,
+                                "weight_decay": 0.0,
+                            }
+                        )
+                        setattr(self, "_composer_group_learnable_opt_registered", True)
+                        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                            print(
+                                "[composer-debug] Registered learnable lambda with actor optimizer: "
+                                f"lambda_init={lambda_init} lambda_r={lambda_r} lambda_lr={lambda_lr}"
+                            )
+
+                batch_context["composer_group_learnable_module"] = module
+
             # Build/inject persistent DARO aggregation module so difficulty weights
             # can be learnable (and optimized with actor params) when enabled.
             if agg_mode == "difficulty_weighted":
