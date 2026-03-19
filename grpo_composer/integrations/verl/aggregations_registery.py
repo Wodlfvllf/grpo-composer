@@ -17,7 +17,12 @@ from grpo_composer.core.aggregation.trajectory_level import TrajectoryLevelAggre
 from grpo_composer.core.aggregation.weighted_token import WeightedTokenAggregation
 
 from .loss_context import config_get as _config_get
-from .utils import _as_tensor, _validate_tensor_shape
+from .utils import (
+    _as_tensor,
+    _compute_tr_token_weights,
+    _resolve_tr_weight_bounds,
+    _validate_tensor_shape,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +58,29 @@ def agg_weighted_token(loss_mat, mask, config, **kwargs):
         if log_probs.shape != mask.shape:
             raise ValueError(f"log_prob shape must match mask shape, got {log_probs.shape} vs {mask.shape}")
 
+    token_weights = kwargs.get("tr_token_weights")
+    if token_weights is not None:
+        token_weights = _as_tensor(token_weights, name="tr_token_weights", device=mask.device)
+        _validate_tensor_shape(
+            token_weights, ndim=(2,), first_dim=mask.shape[0], name="tr_token_weights"
+        )
+        if token_weights.shape != mask.shape:
+            raise ValueError(
+                f"tr_token_weights shape must match mask shape, got {token_weights.shape} vs {mask.shape}"
+            )
+    elif log_probs is not None:
+        token_weights = _compute_tr_token_weights(log_probs, config)
+
+    clip_lower, clip_upper = _resolve_tr_weight_bounds(config)
     agg = WeightedTokenAggregation(
-        alpha=_config_get(config, "tr_alpha", 1.0),
-        tau=_config_get(config, "tr_tau", 1.0),
-        mu=_config_get(config, "tr_mu", 0.5),
+        alpha=_config_get(config, "tr_alpha", 2.0),
+        tau=_config_get(config, "tr_tau", 9.0),
+        mu=_config_get(config, "tr_mu", 0.25),
+        clip_lower=clip_lower,
+        clip_upper=clip_upper,
+        detach_log_probs=True,
     )
-    return agg.aggregate(loss_mat, mask, log_probs=log_probs)
+    return agg.aggregate(loss_mat, mask, log_probs=log_probs, token_weights=token_weights)
 
 
 def agg_group_learnable(loss_mat, mask, config, **kwargs):
