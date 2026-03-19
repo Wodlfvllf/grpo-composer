@@ -8,7 +8,10 @@ import numpy as np
 import torch
 from verl.workers.config import ActorConfig
 
-from .loss_context import config_get_context as _config_get_context
+from .loss_context import (
+    config_get as _config_get,
+    config_get_context as _config_get_context,
+)
 
 
 def _validate_tensor_shape(
@@ -86,16 +89,65 @@ def _infer_sequence_rewards(
     return None
 
 
+def _resolve_tr_weight_bounds(
+    config: Optional[ActorConfig],
+    *,
+    composer_dict: Optional[dict[str, Any]] = None,
+) -> tuple[float, float]:
+    lower = _config_get(config, "tr_l", None, composer_dict)
+    if lower is None:
+        lower = _config_get(config, "tr_L", None, composer_dict)
+    if lower is None:
+        lower = _config_get(config, "tr_weight_lower", 1.0, composer_dict)
+
+    upper = _config_get(config, "tr_u", None, composer_dict)
+    if upper is None:
+        upper = _config_get(config, "tr_U", None, composer_dict)
+    if upper is None:
+        upper = _config_get(config, "tr_weight_upper", 1.4, composer_dict)
+
+    lower = float(lower)
+    upper = float(upper)
+    if lower > upper:
+        raise ValueError(f"TR weight bounds invalid: lower={lower} > upper={upper}")
+    return lower, upper
+
+
+def _compute_tr_token_weights(
+    log_prob: torch.Tensor,
+    config: Optional[ActorConfig],
+    *,
+    composer_dict: Optional[dict[str, Any]] = None,
+) -> torch.Tensor:
+    alpha = float(_config_get(config, "tr_alpha", 2.0, composer_dict))
+    tau = float(_config_get(config, "tr_tau", 9.0, composer_dict))
+    mu = float(_config_get(config, "tr_mu", 0.25, composer_dict))
+    if tau <= 0:
+        raise ValueError(f"tr_tau must be > 0, got {tau}")
+    lower, upper = _resolve_tr_weight_bounds(config, composer_dict=composer_dict)
+
+    # Stop-gradient: TR-GRPO weights should not be optimized through log-probs.
+    token_probs = torch.exp(log_prob.detach())
+    raw = alpha * (torch.sigmoid(token_probs / tau) - mu)
+    return torch.clamp(raw, min=lower, max=upper)
+
+
 # Public aliases without leading underscore for call sites that prefer clean names.
 as_tensor = _as_tensor
 infer_sequence_rewards = _infer_sequence_rewards
 validate_tensor_shape = _validate_tensor_shape
+resolve_tr_weight_bounds = _resolve_tr_weight_bounds
+compute_tr_token_weights = _compute_tr_token_weights
 
 __all__ = [
     "_as_tensor",
+    "_compute_tr_token_weights",
     "_infer_sequence_rewards",
+    "_resolve_tr_weight_bounds",
     "_validate_tensor_shape",
     "as_tensor",
+    "compute_tr_token_weights",
     "infer_sequence_rewards",
+    "resolve_tr_weight_bounds",
     "validate_tensor_shape",
 ]

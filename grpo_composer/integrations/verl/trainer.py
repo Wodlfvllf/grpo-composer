@@ -576,16 +576,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         return plugins
 
     def _validate_supported_modes(self) -> None:
-        composer_cfg = _cfg_get(self.config, "composer", None)
-        agg_mode = _cfg_get(composer_cfg, "agg_mode", "token_mean")
-        lambda_learnable = bool(_cfg_get(composer_cfg, "lambda_learnable", False))
-
-        if agg_mode == "group_learnable" and lambda_learnable:
-            raise ValueError(
-                "group_learnable + lambda_learnable=true needs worker-side optimizer plumbing. "
-                "Set lambda_learnable=false for now or extend actor worker update path."
-            )
-            
         self._enforce_balance_batch_disabled()
 
     def _enforce_balance_batch_disabled(self) -> None:

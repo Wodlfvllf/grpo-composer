@@ -18,7 +18,11 @@ from .loss_context import (
     config_get as _config_get,
     config_get_context as _config_get_context,
 )
-from .utils import _as_tensor, _validate_tensor_shape
+from .utils import (
+    _as_tensor,
+    _compute_tr_token_weights,
+    _validate_tensor_shape,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,15 +49,35 @@ def reg_kl(log_prob, old_log_prob, response_mask, config, **kwargs):
 
 def reg_weighted_kl(log_prob, old_log_prob, response_mask, config, **kwargs):
     regularizer = WeightedKLDivergenceRegularizer()
-    alpha = _config_get(config, "tr_alpha", 1.0)
-    tau = _config_get(config, "tr_tau", 1.0)
-    mu = _config_get(config, "tr_mu", 0.5)
-    token_probs = torch.exp(log_prob)
-    weights = torch.clamp(alpha * (torch.sigmoid(token_probs / tau) - mu), 0.5, 1.5)
+    ref_log_prob = kwargs.get("ref_log_probs")
+    if ref_log_prob is None:
+        ref_log_prob = kwargs.get("ref_log_prob")
+    if ref_log_prob is None:
+        ref_log_prob = kwargs.get("composer_ref_log_probs")
+    if ref_log_prob is None:
+        ref_log_prob = old_log_prob
+    else:
+        ref_log_prob = _as_tensor(ref_log_prob, name="ref_log_probs", device=log_prob.device)
+        _validate_tensor_shape(ref_log_prob, ndim=(2,), first_dim=log_prob.shape[0], name="ref_log_probs")
+        if ref_log_prob.shape != log_prob.shape:
+            raise ValueError(
+                f"ref_log_probs shape must match log_prob shape, got {ref_log_prob.shape} vs {log_prob.shape}"
+            )
+
+    weights = kwargs.get("tr_token_weights")
+    if weights is not None:
+        weights = _as_tensor(weights, name="tr_token_weights", device=log_prob.device)
+        _validate_tensor_shape(weights, ndim=(2,), first_dim=log_prob.shape[0], name="tr_token_weights")
+        if weights.shape != log_prob.shape:
+            raise ValueError(
+                f"tr_token_weights shape must match log_prob shape, got {weights.shape} vs {log_prob.shape}"
+            )
+    else:
+        weights = _compute_tr_token_weights(log_prob, config)
     dummy_rewards = torch.zeros(log_prob.shape[0], device=log_prob.device)
     return regularizer.compute_regularization(
         log_probs=log_prob,
-        ref_log_probs=old_log_prob,
+        ref_log_probs=ref_log_prob,
         mask=response_mask,
         rewards=dummy_rewards,
         weights=weights,
