@@ -20,16 +20,17 @@
 #   KL:            Standard KL (base GRPO)
 
 algorithm:
-  adv_estimator: 'rank_enhanced_grpo'
+  adv_estimator: rank_enhanced_grpo
   rank_xi_minus: -0.5
   rank_xi_plus: 0.5
-  rank_tau: 0.1
-  rank_ranking_method: weight
 
 actor_rollout_ref:
   actor:
     policy_loss:
       loss_mode: composer
+  rollout:
+    n: 4
+
 composer:
   clip_ratio: 0.2
   clip_mode: symmetric
@@ -37,6 +38,10 @@ composer:
   regularizer: kl
   reg_coef: 0.01
   composer_reward_pipeline:
-  - rank
+    - rank
+  ranking_type: heuristic      # or rrm (needs ranking_worker wired)
+  ranking_method: weight       # weight|supplement|reward
+  ranking_tau: 0.1
+
 
 
