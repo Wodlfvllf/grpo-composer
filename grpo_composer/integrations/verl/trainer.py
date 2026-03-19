@@ -8,9 +8,12 @@ composer-specific advantage/reward contexts.
 from __future__ import annotations
 
 from abc import ABC
+import csv
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from pathlib import Path
+import time
 
 import os
 import json
@@ -45,6 +48,113 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
 _ORIGINAL_COMPUTE_ADVANTAGE = None
 _ORIGINAL_RAY_TRAINER_CLASS = None
 _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
+
+
+def _is_wandb_auth_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    if "wandb" not in msg:
+        return False
+    return (
+        "401" in msg
+        or "not logged in" in msg
+        or "permission_error" in msg
+        or "upsertbucket" in msg
+    )
+
+
+def _to_metric_scalar(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float, np.number)):
+        return float(value)
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            try:
+                return float(value.detach().item())
+            except Exception:
+                return None
+        return None
+    return None
+
+
+class _StepMetricsCsvWriter:
+    """Append step metrics in long CSV format: wall_time,step,metric,value."""
+
+    def __init__(self, path: str) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not self.path.exists()
+        self._fh = self.path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._fh)
+        if new_file:
+            self._writer.writerow(["wall_time", "step", "metric", "value"])
+            self._fh.flush()
+
+    def write(self, step: Any, metrics: Any) -> None:
+        if not isinstance(metrics, dict):
+            return
+        wall_time = time.time()
+        wrote = False
+        for metric_name, metric_value in metrics.items():
+            scalar = _to_metric_scalar(metric_value)
+            if scalar is None:
+                continue
+            self._writer.writerow([wall_time, step, str(metric_name), scalar])
+            wrote = True
+        if wrote:
+            self._fh.flush()
+
+    def close(self) -> None:
+        try:
+            self._fh.flush()
+            self._fh.close()
+        except Exception:
+            pass
+
+
+def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str):
+    class _TrackingWithCsvFallback:
+        def __init__(self, *args, **kwargs):
+            self._csv = _StepMetricsCsvWriter(csv_path)
+            self._impl = None
+            if original_tracking_cls is None:
+                return
+            try:
+                self._impl = original_tracking_cls(*args, **kwargs)
+            except Exception as exc:
+                if _is_wandb_auth_error(exc):
+                    print(
+                        "[grpo_composer] W&B init failed (auth/permission). "
+                        f"Continuing with CSV-only logging at {csv_path}. error={exc}"
+                    )
+                else:
+                    self._csv.close()
+                    raise
+
+        def log(self, data, step=None, *args, **kwargs):
+            self._csv.write(step, data)
+            if self._impl is not None:
+                try:
+                    return self._impl.log(data, step=step, *args, **kwargs)
+                except Exception as exc:
+                    if _is_wandb_auth_error(exc):
+                        print(
+                            "[grpo_composer] W&B log failed during training. "
+                            f"Continuing CSV-only. error={exc}"
+                        )
+                        self._impl = None
+                        return None
+                    raise
+            return None
+
+        def finish(self):
+            try:
+                if self._impl is not None and hasattr(self._impl, "finish"):
+                    self._impl.finish()
+            finally:
+                self._csv.close()
+
+    return _TrackingWithCsvFallback
 
 
 def _strict_validation_enabled() -> bool:
@@ -673,14 +783,23 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         # Force intercepting the locally scoped compute_advantage inside ray_trainer
         original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
         original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
+        original_tracking = getattr(ray_trainer_module, "Tracking", None)
 
         composer_cfg = getattr(self, "composer_config_dict", {})
         ref_reward_source = str(composer_cfg.get("reference_reward_source", "auto")).strip().lower()
         ranker = build_ranker(composer_cfg)
+        default_local_dir = str(_cfg_get_nested(self.config, ("trainer", "default_local_dir"), "/checkpoints"))
+        csv_path = str(Path(default_local_dir) / "metrics" / "training_metrics.csv")
 
         try:
             # Re-assert before entering veRL fit loop in case another component toggled it.
             self._enforce_balance_batch_disabled()
+            print(f"[grpo_composer] Step metrics CSV path: {csv_path}")
+
+            # Always persist scalar step metrics into CSV.
+            ray_trainer_module.Tracking = _build_tracking_with_csv_fallback(original_tracking, csv_path)
+            if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = ray_trainer_module.Tracking
 
             if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
                 if self.async_rollout_mode:
@@ -732,6 +851,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = original_compute_advantage
             if original_compute_reward is not None:
                 ray_trainer_module.compute_reward = original_compute_reward
+            if original_tracking is not None:
+                ray_trainer_module.Tracking = original_tracking
+                if "verl.trainer.ppo.ray_trainer" in sys.modules:
+                    sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = original_tracking
 
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)

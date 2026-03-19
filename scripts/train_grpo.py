@@ -104,10 +104,23 @@ def _inject_composer_env_into_ray_runtime(config: Any) -> None:
     """
 
     composer_cfg = _to_plain_dict(_cfg_get(config, "composer", None))
-    if not composer_cfg:
-        return
+    composer_json = json.dumps(composer_cfg, sort_keys=True) if composer_cfg else None
 
-    composer_json = json.dumps(composer_cfg, sort_keys=True)
+    # Ray worker processes may not inherit all driver env vars when runtime_env
+    # is set. Explicitly forward authentication/env knobs required by integrations.
+    passthrough_env: dict[str, str] = {}
+    for env_key in (
+        "WANDB_API_KEY",
+        "WANDB_BASE_URL",
+        "WANDB_ENTITY",
+        "WANDB_PROJECT",
+        "WANDB_MODE",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+    ):
+        env_value = os.environ.get(env_key)
+        if env_value:
+            passthrough_env[env_key] = env_value
 
     try:
         from omegaconf import OmegaConf, open_dict
@@ -125,14 +138,19 @@ def _inject_composer_env_into_ray_runtime(config: Any) -> None:
                         if _cfg_get(config.ray_kwargs.ray_init.runtime_env, "env_vars", None) is None:
                             config.ray_kwargs.ray_init.runtime_env.env_vars = OmegaConf.create({})
                         with open_dict(config.ray_kwargs.ray_init.runtime_env.env_vars):
-                            config.ray_kwargs.ray_init.runtime_env.env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+                            if composer_json is not None:
+                                config.ray_kwargs.ray_init.runtime_env.env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+                            for env_key, env_value in passthrough_env.items():
+                                config.ray_kwargs.ray_init.runtime_env.env_vars[env_key] = env_value
     except Exception:
         # Dict-like fallback for non-OmegaConf configs.
         ray_kwargs = _to_plain_dict(_cfg_get(config, "ray_kwargs", {}))
         ray_init = _to_plain_dict(_cfg_get(ray_kwargs, "ray_init", {}))
         runtime_env = _to_plain_dict(_cfg_get(ray_init, "runtime_env", {}))
         env_vars = _to_plain_dict(_cfg_get(runtime_env, "env_vars", {}))
-        env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+        if composer_json is not None:
+            env_vars["GRPO_COMPOSER_CONFIG"] = composer_json
+        env_vars.update(passthrough_env)
         runtime_env["env_vars"] = env_vars
         ray_init["runtime_env"] = runtime_env
         ray_kwargs["ray_init"] = ray_init
@@ -142,11 +160,16 @@ def _inject_composer_env_into_ray_runtime(config: Any) -> None:
             pass
 
     # Also set in current process for local fallbacks and eager imports.
-    os.environ["GRPO_COMPOSER_CONFIG"] = composer_json
+    if composer_json is not None:
+        os.environ["GRPO_COMPOSER_CONFIG"] = composer_json
 
     if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
-        keys = sorted(composer_cfg.keys())
-        print(f"[composer-debug] Injected GRPO_COMPOSER_CONFIG into Ray runtime env. keys={keys}")
+        keys = sorted(composer_cfg.keys()) if composer_cfg else []
+        forwarded = sorted(passthrough_env.keys())
+        print(
+            "[composer-debug] Injected runtime env for Ray workers. "
+            f"keys={keys} forwarded_env={forwarded}"
+        )
 
 
 class ComposerTaskRunner(TaskRunner):
@@ -157,6 +180,13 @@ class ComposerTaskRunner(TaskRunner):
         import grpo_composer.integrations.verl  # noqa: F401
         from grpo_composer.integrations.verl import patch_verl_main_ppo
         patch_verl_main_ppo()
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(
+                "[composer-debug] TaskRunner env check: "
+                f"WANDB_API_KEY={'present' if bool(os.environ.get('WANDB_API_KEY')) else 'missing'} "
+                f"WANDB_ENTITY={'present' if bool(os.environ.get('WANDB_ENTITY')) else 'missing'} "
+                f"WANDB_PROJECT={'present' if bool(os.environ.get('WANDB_PROJECT')) else 'missing'}"
+            )
         return super().run(config)
 
 

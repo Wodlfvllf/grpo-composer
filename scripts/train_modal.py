@@ -463,6 +463,7 @@ def main(
         print("Attached secrets: none")
     if WANDB_ENABLE_DEFAULT:
         print(f"W&B logging: enabled (secret={WANDB_SECRET_NAME})")
+        print(f"W&B API key in launcher env: {'present' if bool(os.environ.get('WANDB_API_KEY')) else 'missing'}")
     else:
         print("W&B logging: disabled (set MODAL_WANDB_SECRET_NAME)")
 
