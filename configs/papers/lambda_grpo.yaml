@@ -15,18 +15,17 @@
 #   KL:            Optional (paper doesn't specify)
 #
 # Note: λ is a nn.Parameter in GroupLearnableAggregation.
-#   The training loop's optimizer must include it:
-#     lambda_opt = SGD([agg.lambda_], lr=0.1, weight_decay=0.0)
+#   The worker update path must register it into optimizer param groups
+#   with lambda_lr so it receives gradients each actor step.
 
 algorithm:
   adv_estimator: grpo
 actor_rollout_ref:
   actor:
-    lambda_init: 0.0
-    lambda_r: 0.1111
-    lambda_lr: 0.1
     policy_loss:
       loss_mode: composer
+  rollout:
+    n: 4
 composer:
   clip_ratio: 0.2
   clip_mode: symmetric
@@ -34,3 +33,6 @@ composer:
   regularizer: kl
   reg_coef: 0.01
   lambda_learnable: true
+  lambda_init: 0.0
+  lambda_r: 0.1111
+  lambda_lr: 0.1
