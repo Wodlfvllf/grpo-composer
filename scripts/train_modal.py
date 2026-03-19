@@ -105,6 +105,7 @@ CHECKPOINT_VOLUME_NAME = os.environ.get(
 )
 HF_SECRET_NAME = os.environ.get("MODAL_HF_SECRET_NAME", "").strip()
 WANDB_SECRET_NAME = os.environ.get("MODAL_WANDB_SECRET_NAME", "").strip()
+WANDB_ENABLE_DEFAULT = bool(WANDB_SECRET_NAME)
 
 
 def _get_secret(secret_name: str) -> modal.Secret | None:
@@ -121,6 +122,14 @@ _secrets = [
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
+    # Keep env-driven secret-name resolution deterministic across local and
+    # remote module imports to avoid dependency graph mismatches.
+    .env(
+        {
+            "MODAL_HF_SECRET_NAME": HF_SECRET_NAME,
+            "MODAL_WANDB_SECRET_NAME": WANDB_SECRET_NAME,
+        }
+    )
     .pip_install_from_pyproject("pyproject.toml")
     # Keep runtime pins centralized in grpo_composer.runtime_stack.
     .pip_install(*CANONICAL_PIP_PACKAGES)
@@ -352,7 +361,10 @@ def run_training(
     if "actor_rollout_ref.rollout.gpu_memory_utilization" not in existing_keys and n_gpus_per_node <= 2:
         overrides.append("++actor_rollout_ref.rollout.gpu_memory_utilization=0.5")
     if "trainer.logger" not in existing_keys:
-        overrides.append(f"++trainer.logger={_hydra_literal(['console'])}")
+        if WANDB_ENABLE_DEFAULT:
+            overrides.append(f"++trainer.logger={_hydra_literal(['console', 'wandb'])}")
+        else:
+            overrides.append(f"++trainer.logger={_hydra_literal(['console'])}")
     if not _has_any(
         existing_keys,
         "actor_rollout_ref.model.override_config._attn_implementation",
@@ -408,6 +420,11 @@ def run_training(
     )
     if debug:
         env["GRPO_COMPOSER_DEBUG"] = "1"
+        # UID microbatch diagnostics are limited to early microbatches by default.
+        env.setdefault("GRPO_COMPOSER_DEBUG_UID_MICROBATCH", "1")
+        env.setdefault("GRPO_COMPOSER_DEBUG_UID_MAX_MICROBATCH", "8")
+        # Set to 1 only when you want hard failures for bad grouping.
+        env.setdefault("GRPO_COMPOSER_DEBUG_UID_STRICT", "0")
 
     subprocess.run(
         command,
@@ -444,6 +461,10 @@ def main(
         print(f"Attached secrets: {len(_secrets)}")
     else:
         print("Attached secrets: none")
+    if WANDB_ENABLE_DEFAULT:
+        print(f"W&B logging: enabled (secret={WANDB_SECRET_NAME})")
+    else:
+        print("W&B logging: disabled (set MODAL_WANDB_SECRET_NAME)")
 
     checkpoint_path = run_training.remote(
         config=config,

@@ -714,6 +714,105 @@ def _patch_dp_actor_update_policy() -> None:
                         old_log_prob = model_inputs["old_log_probs"]
                         advantages = model_inputs["advantages"]
 
+                        if os.environ.get("GRPO_COMPOSER_DEBUG_UID_MICROBATCH", "0") == "1":
+                            max_uid_logs = 8
+                            try:
+                                max_uid_logs = int(os.environ.get("GRPO_COMPOSER_DEBUG_UID_MAX_MICROBATCH", "8"))
+                            except Exception:
+                                pass
+
+                            if micro_debug_idx < max_uid_logs:
+                                uid_value = model_inputs.get("uid", None)
+                                strict_uid = os.environ.get("GRPO_COMPOSER_DEBUG_UID_STRICT", "0") == "1"
+                                uid_ok = True
+
+                                if uid_value is None:
+                                    uid_ok = False
+                                    print(
+                                        "[composer-debug][uid] micro_batch check: "
+                                        f"mini_idx={batch_idx} micro_idx={micro_debug_idx} "
+                                        "uid missing"
+                                    )
+                                else:
+                                    if isinstance(uid_value, torch.Tensor):
+                                        uid_arr = uid_value.detach().cpu().numpy()
+                                    else:
+                                        uid_arr = np.asarray(uid_value)
+
+                                    b_micro = int(response_mask.shape[0]) if isinstance(response_mask, torch.Tensor) else None
+                                    if uid_arr.ndim != 1 or b_micro is None or uid_arr.shape[0] != b_micro:
+                                        uid_ok = False
+                                        print(
+                                            "[composer-debug][uid] micro_batch check: "
+                                            f"mini_idx={batch_idx} micro_idx={micro_debug_idx} "
+                                            f"uid_shape={tuple(uid_arr.shape)} B_micro={b_micro}"
+                                        )
+                                    else:
+                                        uid_list = uid_arr.tolist()
+                                        uid_counts: dict[Any, int] = defaultdict(int)
+                                        for key in uid_list:
+                                            uid_counts[key] += 1
+                                        count_hist: dict[int, int] = defaultdict(int)
+                                        for cnt in uid_counts.values():
+                                            count_hist[int(cnt)] += 1
+
+                                        run_lengths: list[tuple[Any, int]] = []
+                                        prev_key: Any = None
+                                        run_count = 0
+                                        for key in uid_list:
+                                            if run_count == 0 or key != prev_key:
+                                                if run_count > 0:
+                                                    run_lengths.append((prev_key, run_count))
+                                                prev_key = key
+                                                run_count = 1
+                                            else:
+                                                run_count += 1
+                                        if run_count > 0:
+                                            run_lengths.append((prev_key, run_count))
+
+                                        expected = int(rollout_n) if rollout_n is not None else None
+                                        count_ok = None
+                                        order_ok = None
+                                        prompt_count_expected = None
+                                        if expected is not None and expected > 0:
+                                            count_ok = all(c == expected for c in uid_counts.values())
+                                            if b_micro % expected == 0:
+                                                prompt_count_expected = b_micro // expected
+                                                # Sequence-level integrity check:
+                                                # each contiguous run should be one full prompt group.
+                                                run_size_ok = all(run_len == expected for _, run_len in run_lengths)
+                                                run_count_ok = len(run_lengths) == prompt_count_expected
+                                                run_uid_unique_ok = len({k for k, _ in run_lengths}) == len(run_lengths)
+                                                order_ok = bool(run_size_ok and run_count_ok and run_uid_unique_ok)
+                                            else:
+                                                count_ok = False
+                                                order_ok = False
+
+                                        if count_ok is False:
+                                            uid_ok = False
+                                        if order_ok is False:
+                                            uid_ok = False
+
+                                        preview_n = min(16, len(uid_list))
+                                        run_preview_n = min(8, len(run_lengths))
+                                        print(
+                                            "[composer-debug][uid] micro_batch check: "
+                                            f"mini_idx={batch_idx} micro_idx={micro_debug_idx} "
+                                            f"B_micro={b_micro} rollout_n={expected} "
+                                            f"unique_uids={len(uid_counts)} "
+                                            f"expected_prompts={prompt_count_expected} "
+                                            f"count_ok={count_ok} order_ok={order_ok} "
+                                            f"count_hist={dict(sorted(count_hist.items()))} "
+                                            f"uid[:{preview_n}]={uid_list[:preview_n]} "
+                                            f"runs[:{run_preview_n}]={run_lengths[:run_preview_n]}"
+                                        )
+
+                                if strict_uid and not uid_ok:
+                                    raise ValueError(
+                                        "UID microbatch grouping check failed. "
+                                        "Set GRPO_COMPOSER_DEBUG_UID_STRICT=0 to log-only mode."
+                                    )
+
                         entropy_coeff = float(getattr(self.config, "entropy_coeff", 0.0))
                         loss_agg_mode = getattr(self.config, "loss_agg_mode", "token-mean")
                         calculate_entropy_cfg = bool(getattr(self.config, "calculate_entropy", False))
