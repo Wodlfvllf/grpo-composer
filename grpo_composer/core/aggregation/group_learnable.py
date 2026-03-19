@@ -27,6 +27,7 @@ Mathematical Form:
         λ > 0  → Reward length
         λ learnable → Adaptive
 """
+import numpy as np
 import torch
 import torch.nn as nn
 from .base import AggregationFunction
@@ -35,12 +36,32 @@ from .base import AggregationFunction
 class GroupLearnableAggregation(AggregationFunction):
     def __init__(self, lambda_: float = 0.0, r: float = 0.1111, learnable: bool = True):
         super().__init__()
+        r_value = torch.tensor(float(r), dtype=torch.float32)
         if learnable:
-            self.lambda_ = nn.Parameter(torch.tensor(lambda_))
-            self.r = nn.Parameter(torch.tensor(r))
+            # λ is learnable in λ-GRPO; r is a fixed reducer hyperparameter.
+            self.lambda_ = nn.Parameter(torch.tensor(float(lambda_), dtype=torch.float32))
+            self.register_buffer("r", r_value)
         else:
-            self.lambda_ = torch.tensor(lambda_)
-            self.r = torch.tensor(r)
+            self.lambda_ = torch.tensor(float(lambda_), dtype=torch.float32)
+            self.register_buffer("r", r_value)
+
+    @staticmethod
+    def _build_uid_groups(uid_like, batch_size: int) -> dict[object, list[int]]:
+        if uid_like is None:
+            return {0: list(range(batch_size))}
+
+        if isinstance(uid_like, torch.Tensor):
+            uid_arr = uid_like.detach().cpu().numpy()
+        else:
+            uid_arr = np.asarray(uid_like)
+
+        if uid_arr.ndim != 1 or uid_arr.shape[0] != batch_size:
+            raise ValueError(f"uid must be 1D shape ({batch_size},), got {uid_arr.shape}")
+
+        groups: dict[object, list[int]] = {}
+        for i, key in enumerate(uid_arr.tolist()):
+            groups.setdefault(key, []).append(i)
+        return groups
 
     def aggregate(
         self,
@@ -61,35 +82,34 @@ class GroupLearnableAggregation(AggregationFunction):
 
         Key difference: Learns per-response weights based on length (λ-GRPO).
         """
-        B = loss_per_token.shape[0]
+        batch_size = loss_per_token.shape[0]
+        device = loss_per_token.device
+        dtype = loss_per_token.dtype
 
-        # Sequence lengths
-        # mask.sum(dim=-1): (B, T) → (B,)
-        seq_lengths = mask.sum(dim=-1).float()
+        uid = kwargs.get("composer_uid")
+        if uid is None:
+            uid = kwargs.get("uid")
+        uid_groups = self._build_uid_groups(uid, batch_size)
 
-        # Standardize lengths
-        # mean_length: scalar, std_length: scalar
-        mean_length = seq_lengths.mean()
-        std_length = seq_lengths.std() + 1e-8
+        seq_lengths = mask.sum(dim=-1).to(dtype=torch.float32)
+        lambda_value = self.lambda_
+        if isinstance(lambda_value, torch.Tensor):
+            lambda_value = lambda_value.to(device=device, dtype=torch.float32)
+        r_value = self.r.to(device=device, dtype=torch.float32)
 
-        # z: standardized length scores
-        # (seq_lengths - mean_length) / std_length: (B,)
-        z = (seq_lengths - mean_length) / std_length
+        f_lambda = torch.ones((batch_size,), device=device, dtype=torch.float32)
+        for indices in uid_groups.values():
+            idx = torch.tensor(indices, device=device, dtype=torch.long)
+            grp_lengths = seq_lengths[idx]
+            grp_mean = grp_lengths.mean()
+            grp_std = grp_lengths.std(unbiased=False).clamp_min(1e-8)
+            z = (grp_lengths - grp_mean) / grp_std
+            h = (1.0 + r_value * z).clamp_min(1e-6)
+            g = torch.pow(h, lambda_value)
+            grp_size = float(len(indices))
+            f_lambda[idx] = grp_size * torch.softmax(g, dim=0)
 
-        # h: shifted scores
-        # 1 + self.r * z: (B,)
-        h = 1 + self.r * z
-
-        # f_λ: power-law weights with softmax normalization
-        # h ** self.lambda_: (B,)
-        # B * softmax(dim=0): (B,) — sums to B
-        f_lambda = B * torch.softmax(h ** self.lambda_, dim=0)
-
-        # Apply learnable weights
-        # f_lambda.unsqueeze(-1): (B,) → (B, 1)
-        # loss_per_token * mask: (B, T)
-        # weighted_loss: (B, 1) * (B, T) → (B, T)
-        weighted_loss = f_lambda.unsqueeze(-1) * loss_per_token * mask
+        weighted_loss = f_lambda.to(dtype=dtype).unsqueeze(-1) * loss_per_token * mask
 
         # Global token normalization
         # weighted_loss.sum(): (B, T) → scalar
