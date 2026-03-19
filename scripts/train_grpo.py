@@ -37,6 +37,14 @@ if str(REPO_ROOT) not in sys.path:
 
 import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
 from grpo_composer.integrations.verl import patch_verl_main_ppo
+from grpo_composer.integrations.verl import (  # noqa: F401
+    aggregations_registery,
+    clip_registery,
+    patch_dp_actor,
+    regularisation_registery,
+    rewards_registery,
+    utils,
+)
 
 
 # ────────────────────────────────────────────────────
