@@ -152,8 +152,8 @@ def compute_rank_enhanced_advantage(
         return fn.compute_advantages(group_scores, group_correctness)
 
     with torch.no_grad():
-        advantages = _compute_groupwise(scores, group_indices, _clip_group)
-    return advantages, scores
+        sequence_adv = _compute_groupwise(scores, group_indices, _clip_group)
+    return _broadcast_sequence_advantages(sequence_adv, response_mask)
 
 @register_adv_est("difficulty_aware_grpo")
 def compute_difficulty_aware_advantage(
