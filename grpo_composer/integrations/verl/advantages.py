@@ -5,6 +5,7 @@ This adapter registers custom advantage estimators into veRL while handling
 shape conversions between veRL batch tensors and grpo_composer core APIs.
 """
 
+from atexit import register
 from collections import defaultdict
 from typing import Any, Callable, Optional
 
@@ -26,6 +27,8 @@ from grpo_composer.core.advantages.standard import StandardAdvantageFunction
 from grpo_composer.core.advantages.static_value import StaticValueAdvantageFunction
 from grpo_composer.core.advantages.stratified import StratifiedAdvantageFunction
 from grpo_composer.core.advantages.unbiased import UnbiasedAdvantageFunction
+from grpo_composer.core.advantages.advantage_clipping import AdvantageClipping
+
 
 
 def _config_get(config: Optional[AlgoConfig], key: str, default):
@@ -126,6 +129,26 @@ def _compute_groupwise(
 # Persistent instance to maintain KRPO filter state across steps.
 _kalman_fn: Optional[KalmanAdvantageFunction] = None
 
+@register_adv_est("rank_enhanced_grpo")
+def compute_rank_enhanced_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    _validate_inputs(token_level_rewards, response_mask, index)
+    scores = _sequence_scores(token_level_rewards, response_mask)
+    group_indices = _collect_group_indices(index, scores.shape[0])
+
+    xi_minus = _config_get(config, "rank_xi_minus", -0.5)
+    xi_plus = _config_get(config, "rank_xi_plus", 0.5)
+    
+    fn = AdvantageClipping(xi_minus=xi_minus, xi_plus=xi_plus, eps=epsilon)
+    with torch.no_grad():
+        advantages = _compute_groupwise(scores, group_indices, fn)
+    return advantages, scores
 
 @register_adv_est("difficulty_aware_grpo")
 def compute_difficulty_aware_advantage(
