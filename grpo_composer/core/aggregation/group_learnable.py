@@ -36,14 +36,12 @@ from .base import AggregationFunction
 class GroupLearnableAggregation(AggregationFunction):
     def __init__(self, lambda_: float = 0.0, r: float = 0.1111, learnable: bool = True):
         super().__init__()
-        r_value = torch.tensor(float(r), dtype=torch.float32)
+        self.r = torch.tensor(float(r), dtype=torch.float32)
         if learnable:
             # λ is learnable in λ-GRPO; r is a fixed reducer hyperparameter.
             self.lambda_ = nn.Parameter(torch.tensor(float(lambda_), dtype=torch.float32))
-            self.register_buffer("r", r_value)
         else:
             self.lambda_ = torch.tensor(float(lambda_), dtype=torch.float32)
-            self.register_buffer("r", r_value)
 
     @staticmethod
     def _build_uid_groups(uid_like, batch_size: int) -> dict[object, list[int]]:
