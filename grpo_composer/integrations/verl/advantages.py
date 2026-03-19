@@ -146,8 +146,13 @@ def compute_rank_enhanced_advantage(
     xi_plus = _config_get(config, "rank_xi_plus", 0.5)
     
     fn = AdvantageClipping(xi_minus=xi_minus, xi_plus=xi_plus, eps=epsilon)
+
+    def _clip_group(group_scores: torch.Tensor) -> torch.Tensor:
+        group_correctness = (group_scores > 0).to(dtype=group_scores.dtype)
+        return fn.compute_advantages(group_scores, group_correctness)
+
     with torch.no_grad():
-        advantages = _compute_groupwise(scores, group_indices, fn)
+        advantages = _compute_groupwise(scores, group_indices, _clip_group)
     return advantages, scores
 
 @register_adv_est("difficulty_aware_grpo")

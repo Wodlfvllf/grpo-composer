@@ -15,11 +15,23 @@ Usage:
 
 from . import advantages  # registers @register_adv_est decorators
 from . import losses      # registers @register_policy_loss decorators
+from . import utils
+from . import clip_registery
+from . import aggregations_registery
+from . import regularisation_registery
+from . import rewards_registery
+from . import patch_dp_actor
 from .trainer import ComposerRayPPOTrainer, patch_verl_main_ppo, unpatch_verl_main_ppo
 
 __all__ = [
     "advantages",
     "losses",
+    "utils",
+    "clip_registery",
+    "aggregations_registery",
+    "regularisation_registery",
+    "rewards_registery",
+    "patch_dp_actor",
     "ComposerRayPPOTrainer",
     "patch_verl_main_ppo",
     "unpatch_verl_main_ppo",
