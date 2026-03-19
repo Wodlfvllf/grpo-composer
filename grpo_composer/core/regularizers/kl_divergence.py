@@ -107,16 +107,15 @@ class WeightedKLDivergenceRegularizer(Regularizer):
         """
         if weights is None:
             raise ValueError("WeightedKLDivergenceRegularizer requires 'weights' argument.")
-            
-        # KL per token: (B, G, T)
-        kl = log_probs - ref_log_probs
 
-        # Weighted KL: (B, G, T)
-        weighted_kl = kl * weights * mask
+        # TR-GRPO weighted KL token term:
+        # D_kl[w; pi || pi_ref] = w * (pi_ref / pi) - log(w * (pi_ref / pi)) - 1
+        log_ref_over_pi = torch.clamp(ref_log_probs - log_probs, min=-20.0, max=20.0)
+        ref_over_pi = torch.exp(log_ref_over_pi)
+        weighted_ratio = torch.clamp(weights * ref_over_pi, min=1e-8)
+        weighted_kl = (weighted_ratio - torch.log(weighted_ratio) - 1.0) * mask
 
-        # Mean over valid tokens (normalized by total token count or total weight?)
-        # Usually regularizers are added to loss which is mean-reduced.
-        # We normalize by total valid tokens to keep scale consistent with policy loss.
+        # Mean over valid tokens.
         kl_loss = weighted_kl.sum() / (mask.sum() + 1e-8)
         
         return kl_loss
