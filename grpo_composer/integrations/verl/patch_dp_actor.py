@@ -59,6 +59,33 @@ def _cfg_get(config: Any, key: str, default=None):
     return default
 
 
+def _extract_rollout_n(meta_info: Any) -> int | None:
+    value = None
+    if isinstance(meta_info, dict):
+        value = meta_info.get("rollout_n", None)
+        if value is None:
+            value = meta_info.get("n", None)
+    else:
+        getter = getattr(meta_info, "get", None)
+        if callable(getter):
+            try:
+                value = getter("rollout_n", None)
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    value = getter("n", None)
+                except Exception:
+                    value = None
+
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _patch_dp_actor_update_policy() -> None:
     """Patch veRL actor worker update path to bind composer config per batch."""
     if DataParallelPPOActor is None:
@@ -442,16 +469,7 @@ def _patch_dp_actor_update_policy() -> None:
             if isinstance(sequence_rewards, torch.Tensor):
                 batch_context["composer_sequence_rewards"] = sequence_rewards
 
-            rollout_n = None
-            if isinstance(meta_info, dict):
-                rollout_n = meta_info.get("n")
-            else:
-                getter = getattr(meta_info, "get", None)
-                if callable(getter):
-                    try:
-                        rollout_n = getter("n", None)
-                    except Exception:
-                        rollout_n = None
+            rollout_n = _extract_rollout_n(meta_info)
             if rollout_n is not None:
                 batch_context["rollout_n"] = rollout_n
 
@@ -521,17 +539,8 @@ def _patch_dp_actor_update_policy() -> None:
             mini_batches = data.split(self.config.ppo_mini_batch_size)
             on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
 
-            rollout_n = None
             meta_info = getattr(data, "meta_info", None)
-            if isinstance(meta_info, dict):
-                rollout_n = meta_info.get("n")
-            else:
-                getter = getattr(meta_info, "get", None)
-                if callable(getter):
-                    try:
-                        rollout_n = getter("n", None)
-                    except Exception:
-                        rollout_n = None
+            rollout_n = _extract_rollout_n(meta_info)
 
             metrics = {
                 "actor/pg_loss": 0.0,
@@ -771,9 +780,20 @@ def _patch_dp_actor_update_policy() -> None:
                                             run_lengths.append((prev_key, run_count))
 
                                         expected = int(rollout_n) if rollout_n is not None else None
+                                        expected_source = "meta"
                                         count_ok = None
                                         order_ok = None
                                         prompt_count_expected = None
+                                        if expected is None:
+                                            # Fallback inference for debug observability:
+                                            # if every uid appears with the same multiplicity
+                                            # in this microbatch, treat that as expected rollout_n.
+                                            unique_counts = sorted(set(int(c) for c in uid_counts.values()))
+                                            if len(unique_counts) == 1 and unique_counts[0] > 0:
+                                                inferred = unique_counts[0]
+                                                if b_micro % inferred == 0:
+                                                    expected = inferred
+                                                    expected_source = "inferred"
                                         if expected is not None and expected > 0:
                                             count_ok = all(c == expected for c in uid_counts.values())
                                             if b_micro % expected == 0:
@@ -799,6 +819,7 @@ def _patch_dp_actor_update_policy() -> None:
                                             "[composer-debug][uid] micro_batch check: "
                                             f"mini_idx={batch_idx} micro_idx={micro_debug_idx} "
                                             f"B_micro={b_micro} rollout_n={expected} "
+                                            f"rollout_n_src={expected_source} "
                                             f"unique_uids={len(uid_counts)} "
                                             f"expected_prompts={prompt_count_expected} "
                                             f"count_ok={count_ok} order_ok={order_ok} "

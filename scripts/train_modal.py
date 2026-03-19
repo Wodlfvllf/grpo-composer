@@ -105,6 +105,14 @@ CHECKPOINT_VOLUME_NAME = os.environ.get(
 )
 HF_SECRET_NAME = os.environ.get("MODAL_HF_SECRET_NAME", "").strip()
 WANDB_SECRET_NAME = os.environ.get("MODAL_WANDB_SECRET_NAME", "").strip()
+WANDB_ENTITY_NAME = (
+    os.environ.get("WANDB_ENTITY", "").strip()
+    or os.environ.get("MODAL_WANDB_ENTITY", "").strip()
+)
+WANDB_PROJECT_NAME = (
+    os.environ.get("WANDB_PROJECT", "").strip()
+    or os.environ.get("MODAL_WANDB_PROJECT", "").strip()
+)
 WANDB_ENABLE_DEFAULT = bool(WANDB_SECRET_NAME)
 
 
@@ -128,6 +136,8 @@ image = (
         {
             "MODAL_HF_SECRET_NAME": HF_SECRET_NAME,
             "MODAL_WANDB_SECRET_NAME": WANDB_SECRET_NAME,
+            "WANDB_ENTITY": WANDB_ENTITY_NAME,
+            "WANDB_PROJECT": WANDB_PROJECT_NAME,
         }
     )
     .pip_install_from_pyproject("pyproject.toml")
@@ -248,6 +258,26 @@ def _pkg_version(pkg_name: str) -> str:
         return version(pkg_name)
     except PackageNotFoundError:
         return "not-installed"
+
+
+def _probe_wandb_auth(env: dict[str, str]) -> tuple[bool, str]:
+    api_key = env.get("WANDB_API_KEY", "").strip()
+    if not api_key:
+        return False, "WANDB_API_KEY missing in container env"
+    try:
+        import wandb  # type: ignore
+
+        wandb.login(key=api_key, relogin=True)
+        try:
+            viewer = wandb.Api().viewer
+            entity = getattr(viewer, "entity", None)
+            if entity:
+                return True, f"authenticated (entity={entity})"
+        except Exception:
+            pass
+        return True, "authenticated"
+    except Exception as exc:
+        return False, str(exc)
 
 
 @app.function(
@@ -418,6 +448,23 @@ def run_training(
     env["PYTHONPATH"] = (
         f"{REMOTE_ROOT}:{existing_pythonpath}" if existing_pythonpath else str(REMOTE_ROOT)
     )
+    if WANDB_ENABLE_DEFAULT:
+        print(
+            "W&B API key in container env: "
+            f"{'present' if bool(env.get('WANDB_API_KEY')) else 'missing'}"
+        )
+        print(
+            "W&B routing in container env: "
+            f"entity={env.get('WANDB_ENTITY', '') or '(unset)'} "
+            f"project={env.get('WANDB_PROJECT', '') or '(unset)'}"
+        )
+        ok, reason = _probe_wandb_auth(env)
+        if ok:
+            print(f"W&B auth probe: {reason}")
+        else:
+            print(f"W&B auth probe failed: {reason}")
+            print("W&B logger will be disabled for this run; CSV metrics will still be saved.")
+            command.append(f"++trainer.logger={_hydra_literal(['console'])}")
     if debug:
         env["GRPO_COMPOSER_DEBUG"] = "1"
         # UID microbatch diagnostics are limited to early microbatches by default.
@@ -463,7 +510,11 @@ def main(
         print("Attached secrets: none")
     if WANDB_ENABLE_DEFAULT:
         print(f"W&B logging: enabled (secret={WANDB_SECRET_NAME})")
-        print(f"W&B API key in launcher env: {'present' if bool(os.environ.get('WANDB_API_KEY')) else 'missing'}")
+        print(
+            "W&B defaults from launcher env: "
+            f"entity={WANDB_ENTITY_NAME or '(unset)'} "
+            f"project={WANDB_PROJECT_NAME or '(unset)'}"
+        )
     else:
         print("W&B logging: disabled (set MODAL_WANDB_SECRET_NAME)")
 

@@ -52,13 +52,13 @@ _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
 
 def _is_wandb_auth_error(exc: Exception) -> bool:
     msg = str(exc).lower()
-    if "wandb" not in msg:
-        return False
+    exc_name = type(exc).__name__.lower()
     return (
         "401" in msg
         or "not logged in" in msg
         or "permission_error" in msg
         or "upsertbucket" in msg
+        or exc_name == "commerror"
     )
 
 
@@ -118,18 +118,23 @@ def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str)
             self._csv = _StepMetricsCsvWriter(csv_path)
             self._impl = None
             if original_tracking_cls is None:
+                print(
+                    "[grpo_composer] Tracking backend: csv-only "
+                    f"(no upstream Tracking class). csv={csv_path}"
+                )
                 return
             try:
                 self._impl = original_tracking_cls(*args, **kwargs)
+                print(
+                    "[grpo_composer] Tracking backend: upstream+csv "
+                    f"(W&B expected if configured). csv={csv_path}"
+                )
             except Exception as exc:
-                if _is_wandb_auth_error(exc):
-                    print(
-                        "[grpo_composer] W&B init failed (auth/permission). "
-                        f"Continuing with CSV-only logging at {csv_path}. error={exc}"
-                    )
-                else:
-                    self._csv.close()
-                    raise
+                reason = "auth/permission" if _is_wandb_auth_error(exc) else "tracking backend"
+                print(
+                    "[grpo_composer] Tracking init failed "
+                    f"({reason}). Continuing with CSV-only logging at {csv_path}. error={exc}"
+                )
 
         def log(self, data, step=None, *args, **kwargs):
             self._csv.write(step, data)
@@ -137,14 +142,13 @@ def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str)
                 try:
                     return self._impl.log(data, step=step, *args, **kwargs)
                 except Exception as exc:
-                    if _is_wandb_auth_error(exc):
-                        print(
-                            "[grpo_composer] W&B log failed during training. "
-                            f"Continuing CSV-only. error={exc}"
-                        )
-                        self._impl = None
-                        return None
-                    raise
+                    reason = "auth/permission" if _is_wandb_auth_error(exc) else "tracking backend"
+                    print(
+                        "[grpo_composer] Tracking log failed "
+                        f"({reason}). Continuing CSV-only. error={exc}"
+                    )
+                    self._impl = None
+                    return None
             return None
 
         def finish(self):
@@ -776,6 +780,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
     def fit(self) -> None:
         """Override fit to guarantee compute_advantage patching within the execution loop."""
         import verl.trainer.ppo.ray_trainer as ray_trainer_module
+        import verl.utils.tracking as tracking_module
         import sys
         from .info_grpo_hook import InfoGRPORolloutAugmentor
         from .ref_reward_runtime import ensure_reference_rewards, has_reference_rewards
@@ -784,6 +789,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
         original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
         original_tracking = getattr(ray_trainer_module, "Tracking", None)
+        original_tracking_utils = getattr(tracking_module, "Tracking", None)
+        tracking_base_cls = original_tracking or original_tracking_utils
 
         composer_cfg = getattr(self, "composer_config_dict", {})
         ref_reward_source = str(composer_cfg.get("reference_reward_source", "auto")).strip().lower()
@@ -797,9 +804,13 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             print(f"[grpo_composer] Step metrics CSV path: {csv_path}")
 
             # Always persist scalar step metrics into CSV.
-            ray_trainer_module.Tracking = _build_tracking_with_csv_fallback(original_tracking, csv_path)
+            ray_trainer_module.Tracking = _build_tracking_with_csv_fallback(tracking_base_cls, csv_path)
             if "verl.trainer.ppo.ray_trainer" in sys.modules:
                 sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = ray_trainer_module.Tracking
+            # Patch source Tracking class too, in case veRL resolves from utils module.
+            tracking_module.Tracking = ray_trainer_module.Tracking
+            if "verl.utils.tracking" in sys.modules:
+                sys.modules["verl.utils.tracking"].Tracking = ray_trainer_module.Tracking
 
             if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
                 if self.async_rollout_mode:
@@ -855,6 +866,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                 ray_trainer_module.Tracking = original_tracking
                 if "verl.trainer.ppo.ray_trainer" in sys.modules:
                     sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = original_tracking
+            if original_tracking_utils is not None:
+                tracking_module.Tracking = original_tracking_utils
+                if "verl.utils.tracking" in sys.modules:
+                    sys.modules["verl.utils.tracking"].Tracking = original_tracking_utils
 
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)
