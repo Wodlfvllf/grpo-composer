@@ -21,6 +21,8 @@
 
 algorithm:
   adv_estimator: static_value_grpo
+  kl_ctrl:
+    kl_coef: 0.0001
 actor_rollout_ref:
   actor:
     policy_loss:

@@ -20,7 +20,12 @@
 #   KL:            Standard KL (base GRPO)
 
 algorithm:
-  adv_estimator: grpo
+  adv_estimator: 'rank_enhanced_grpo'
+  rank_xi_minus: -0.5
+  rank_xi_plus: 0.5
+  rank_tau: 0.1
+  rank_ranking_method: weight
+
 actor_rollout_ref:
   actor:
     policy_loss:
@@ -31,7 +36,7 @@ composer:
   agg_mode: token_mean
   regularizer: kl
   reg_coef: 0.01
-  ranking_method: weight
-  ranking_tau: 0.1
   composer_reward_pipeline:
   - rank
+
+
