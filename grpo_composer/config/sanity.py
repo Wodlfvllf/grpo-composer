@@ -236,11 +236,20 @@ def run_preflight_sanity_checks(
 
     agg_mode = _get_nested(effective, "composer.agg_mode")
     lambda_learnable = bool(_get_nested(effective, "composer.lambda_learnable", False))
-    if agg_mode == "group_learnable" and lambda_learnable:
-        errors.append(
-            "composer.agg_mode=group_learnable with composer.lambda_learnable=true is not yet supported by "
-            "the trainer optimizer path."
-        )
+    if agg_mode == "group_learnable":
+        lambda_r = _get_nested(effective, "composer.lambda_r", 0.1111)
+        if not isinstance(lambda_r, (int, float)) or float(lambda_r) <= 0:
+            errors.append(
+                "composer.lambda_r must be a positive number when composer.agg_mode=group_learnable."
+            )
+
+        if lambda_learnable:
+            lambda_lr = _get_nested(effective, "composer.lambda_lr", 0.1)
+            if not isinstance(lambda_lr, (int, float)) or float(lambda_lr) <= 0:
+                errors.append(
+                    "composer.lambda_lr must be a positive number when "
+                    "composer.lambda_learnable=true and composer.agg_mode=group_learnable."
+                )
 
     regularizer = _get_nested(effective, "composer.regularizer")
     reward_pipeline = _normalize_string_list(_get_nested(effective, "composer.reward_pipeline", []))
