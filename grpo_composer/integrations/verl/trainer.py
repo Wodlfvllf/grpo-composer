@@ -83,30 +83,54 @@ class _StepMetricsCsvWriter:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not self.path.exists()
-        self._fh = self.path.open("a", newline="", encoding="utf-8")
+        if self.path.exists():
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            backup = self.path.with_name(f"{self.path.stem}_{ts}{self.path.suffix}")
+            self.path.rename(backup)
+        self._fh = self.path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._fh)
-        if new_file:
-            self._writer.writerow(["wall_time", "step", "metric", "value"])
-            self._fh.flush()
+        self._writer.writerow(["wall_time", "step", "metric", "value"])
+        self._fh.flush()
+        try:
+            os.fsync(self._fh.fileno())
+        except Exception:
+            pass
 
     def write(self, step: Any, metrics: Any) -> None:
         if not isinstance(metrics, dict):
             return
         wall_time = time.time()
         wrote = False
+        
+        # Also print core metrics to console so user can see them immediately
+        # even if Ray Actor is SIGKILLed before file closes.
+        if step is not None:
+            core_metrics = {
+                k: v for k, v in metrics.items() 
+                if k in ("actor/entropy", "actor/clip_frac", "actor/approx_kl_with_ref", "critic/loss", "reward/composer_sequence_rewards_mean") or k.startswith("training/")
+            }
+            core_str = " | ".join(f"{k}: {_to_metric_scalar(v):.4f}" for k, v in core_metrics.items() if _to_metric_scalar(v) is not None)
+            if core_str:
+                print(f"[{time.strftime('%H:%M:%S')}] Step {step} Metrics: {core_str}")
+
         for metric_name, metric_value in metrics.items():
             scalar = _to_metric_scalar(metric_value)
             if scalar is None:
                 continue
             self._writer.writerow([wall_time, step, str(metric_name), scalar])
             wrote = True
+        
         if wrote:
             self._fh.flush()
+            try:
+                os.fsync(self._fh.fileno()) # Force network sync for Modal Volumes!
+            except Exception:
+                pass
 
     def close(self) -> None:
         try:
             self._fh.flush()
+            os.fsync(self._fh.fileno())
             self._fh.close()
         except Exception:
             pass
@@ -124,13 +148,34 @@ def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str)
                 )
                 return
             try:
+                # veRL's Tracking.__init__ calls wandb.init() without
+                # wandb.login() first. In Ray worker processes the .netrc
+                # file doesn't exist, so wandb.init() fails with a 401
+                # upsertBucket error even when WANDB_API_KEY is in the env.
+                # Explicitly login before delegating to the Tracking class.
+                _wandb_key = os.environ.get("WANDB_API_KEY", "").strip()
+                if _wandb_key:
+                    try:
+                        import wandb
+                        wandb.login(key=_wandb_key, relogin=True)
+                    except Exception as _login_exc:
+                        print(f"[grpo_composer] wandb.login() failed: {_login_exc}")
                 self._impl = original_tracking_cls(*args, **kwargs)
                 print(
                     "[grpo_composer] Tracking backend: upstream+csv "
                     f"(W&B expected if configured). csv={csv_path}"
                 )
             except Exception as exc:
-                reason = "auth/permission" if _is_wandb_auth_error(exc) else "tracking backend"
+                reason = "auth/permission (INVALID KEY OR ENTITY)" if _is_wandb_auth_error(exc) else "tracking backend"
+                if _is_wandb_auth_error(exc):
+                    print(
+                        "\n🚨 [CRITICAL W&B ERROR] WANDB_API_KEY is present in the environment, "
+                        "but the W&B backend rejected it with HTTP 401 'user is not logged in'.\n"
+                        "This means exactly one of two things:\n"
+                        "  1. The API key in your Modal Secret is expired, revoked, or has leading/trailing spaces.\n"
+                        "  2. You are setting WANDB_ENTITY to a team name you do not have permission to write to.\n"
+                        "Please go to your Modal Secrets dashboard, delete the 'wandb' secret, and re-create it perfectly!\n"
+                    )
                 print(
                     "[grpo_composer] Tracking init failed "
                     f"({reason}). Continuing with CSV-only logging at {csv_path}. error={exc}"

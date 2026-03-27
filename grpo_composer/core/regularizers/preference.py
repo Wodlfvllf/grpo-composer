@@ -90,6 +90,12 @@ class PreferenceRegularizer(Regularizer):
         """
         B = log_probs.shape[0]
         
+        import os
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"[composer-debug][preference] B={B} "
+                  f"log_probs: {log_probs.shape} | ref_log_probs: {ref_log_probs.shape} "
+                  f"identical: {torch.equal(log_probs, ref_log_probs)}")
+
         # Step 1: Length-normalized sequence log-probs
         seq_lengths = mask.sum(dim=-1).clamp(min=1)  # (B,)
         ell_theta = (log_probs * mask).sum(dim=-1) / seq_lengths     # (B,)
@@ -98,27 +104,29 @@ class PreferenceRegularizer(Regularizer):
         # Log-ratio per sequence: ℓ_θ(o_i) - ℓ_ref(o_i)
         log_ratio = ell_theta - ell_ref  # (B,)
         
-        # Step 2: Construct implicit preference pairs
+        # Step 2: Construct implicit preference pairs vectorially
         # S(q) = {(i, j) | r_i > r_j, r_i - r_j > δ_r}
-        # For all i, j in the batch (treating the batch as one group)
-        logits = []
-        for i in range(B):
-            for j in range(B):
-                if rewards[i] > rewards[j] and (rewards[i] - rewards[j]) > self.delta_reward:
-                    # Step 3: DPO logit
-                    # z_{i,j} = β_DPO * (log_ratio_i - log_ratio_j)
-                    z_ij = self.beta_dpo * (log_ratio[i] - log_ratio[j])
-                    logits.append(z_ij)
         
-        if len(logits) == 0:
-            # No valid pairs (all same reward), return zero
+        # compute (B, B) matrix of reward differences where element [i, j] is r_i - r_j
+        reward_diffs = rewards.unsqueeze(1) - rewards.unsqueeze(0)  # (B, B)
+        
+        # A valid pair (i, j) must win by more than delta_reward
+        valid_pairs_mask = reward_diffs > self.delta_reward  # (B, B)
+        
+        # If no pairs cross the margin, return zero loss immediately
+        if not valid_pairs_mask.any():
             return torch.tensor(0.0, device=log_probs.device)
+            
+        # Step 3: DPO logit matrix: (log_ratio_i - log_ratio_j)
+        log_ratio_diffs = log_ratio.unsqueeze(1) - log_ratio.unsqueeze(0)  # (B, B)
+        z_matrix = log_ratio_diffs * self.beta_dpo  # (B, B)
         
-        # Step 4: Compute log σ(z_{i,j})
-        z = torch.stack(logits)  # (num_pairs,)
-        log_sigmoid_z = F.logsigmoid(z)  # (num_pairs,)
+        # Select only the valid pairs
+        # z_valid has shape (num_pairs,)
+        z_valid = z_matrix[valid_pairs_mask]
+        
+        # Step 4: Compute log σ(z_{i,j}) for all pairs
+        log_sigmoid_z = F.logsigmoid(z_valid)  # (num_pairs,)
         
         # Step 5: Return NEGATIVE mean (since we minimize loss, but want to maximize J_pref)
-        # J_pref = mean(log σ(z)) — this is a reward (higher = better)
-        # Loss contribution = -J_pref (so minimizing loss maximizes J_pref)
         return -log_sigmoid_z.mean()

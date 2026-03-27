@@ -103,9 +103,17 @@ def reg_preference(log_prob, old_log_prob, response_mask, config, **kwargs):
 
     rewards = _as_tensor(rewards, name="sequence_rewards", device=log_prob.device)
     _validate_tensor_shape(rewards, ndim=(1,), first_dim=log_prob.shape[0], name="sequence_rewards")
+    ref_log_prob = kwargs.get("ref_log_probs")
+    if ref_log_prob is None:
+        ref_log_prob = kwargs.get("ref_log_prob")
+    if ref_log_prob is None:
+        ref_log_prob = kwargs.get("composer_ref_log_probs")
+    if ref_log_prob is None:
+        ref_log_prob = old_log_prob
+
     return regularizer.compute_regularization(
         log_probs=log_prob,
-        ref_log_probs=old_log_prob,
+        ref_log_probs=ref_log_prob,
         rewards=rewards,
         mask=response_mask,
     )

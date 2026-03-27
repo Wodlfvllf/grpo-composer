@@ -268,14 +268,16 @@ def _probe_wandb_auth(env: dict[str, str]) -> tuple[bool, str]:
         import wandb  # type: ignore
 
         wandb.login(key=api_key, relogin=True)
-        try:
-            viewer = wandb.Api().viewer
-            entity = getattr(viewer, "entity", None)
-            if entity:
-                return True, f"authenticated (entity={entity})"
-        except Exception:
-            pass
-        return True, "authenticated"
+        viewer = wandb.Api().viewer
+        viewer_username = getattr(viewer, "username", None)
+        entity = getattr(viewer, "entity", None)
+        target_entity = env.get("WANDB_ENTITY", "").strip()
+        target_project = env.get("WANDB_PROJECT", "").strip()
+        return True, (
+            "authenticated "
+            f"(viewer={viewer_username or 'unknown'}, viewer_entity={entity or 'unknown'}, "
+            f"target_entity={target_entity or 'unset'}, target_project={target_project or 'unset'})"
+        )
     except Exception as exc:
         return False, str(exc)
 
@@ -462,9 +464,9 @@ def run_training(
         if ok:
             print(f"W&B auth probe: {reason}")
         else:
-            print(f"W&B auth probe failed: {reason}")
-            print("W&B logger will be disabled for this run; CSV metrics will still be saved.")
-            command.append(f"++trainer.logger={_hydra_literal(['console'])}")
+            print(f"W&B auth probe failed (non-fatal): {reason}")
+            print("W&B init will be retried inside the training process. "
+                  "If it also fails there, CSV metrics will still be saved as fallback.")
     if debug:
         env["GRPO_COMPOSER_DEBUG"] = "1"
         # UID microbatch diagnostics are limited to early microbatches by default.

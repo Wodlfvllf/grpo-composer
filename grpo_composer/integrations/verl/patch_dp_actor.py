@@ -519,7 +519,7 @@ def _patch_dp_actor_update_policy() -> None:
                 "old_log_probs",
                 "advantages",
             ]
-            if self.config.use_kl_loss:
+            if self.config.use_kl_loss or "ref_log_prob" in data.batch.keys():
                 select_keys.append("ref_log_prob")
             if "rollout_is_weights" in data.batch.keys():
                 select_keys.append("rollout_is_weights")
@@ -878,72 +878,77 @@ def _patch_dp_actor_update_policy() -> None:
                             loss_extra_kwargs["uid"] = uid
                             loss_extra_kwargs["composer_uid"] = uid
 
-                            if daro_enabled:
-                                mu_id_row = model_inputs.get("daro_mu_id_row", None)
-                                inv_group_tokens_row = model_inputs.get("daro_inv_group_tokens_row", None)
-                                active_mu_ids = mini_active_mu_ids_tensor
+                        ref_log_prob = model_inputs.get("ref_log_prob", None)
+                        if ref_log_prob is not None:
+                            loss_extra_kwargs["ref_log_prob"] = ref_log_prob
+                            loss_extra_kwargs["composer_ref_log_probs"] = ref_log_prob
 
-                                if not isinstance(mu_id_row, torch.Tensor):
-                                    raise ValueError(
-                                        "DARO requires microbatch daro_mu_id_row tensor from mini-batch context."
-                                    )
-                                if not isinstance(inv_group_tokens_row, torch.Tensor):
-                                    raise ValueError(
-                                        "DARO requires microbatch daro_inv_group_tokens_row tensor from mini-batch context."
-                                    )
-                                if mu_id_row.ndim != 1 or mu_id_row.shape[0] != int(response_mask.shape[0]):
-                                    raise ValueError(
-                                        "DARO microbatch daro_mu_id_row shape mismatch: "
-                                        f"{tuple(mu_id_row.shape)} vs B_micro={int(response_mask.shape[0])}"
-                                    )
-                                if (
-                                    inv_group_tokens_row.ndim != 1
-                                    or inv_group_tokens_row.shape[0] != int(response_mask.shape[0])
-                                ):
-                                    raise ValueError(
-                                        "DARO microbatch daro_inv_group_tokens_row shape mismatch: "
-                                        f"{tuple(inv_group_tokens_row.shape)} vs B_micro={int(response_mask.shape[0])}"
-                                    )
-                                if active_mu_ids is None:
-                                    active_mu_ids = torch.empty(
-                                        (0,),
-                                        device=response_mask.device,
-                                        dtype=torch.long,
-                                    )
-                                else:
-                                    active_mu_ids = active_mu_ids.to(
-                                        device=response_mask.device,
-                                        dtype=torch.long,
-                                    )
-                                mu_id_row = mu_id_row.to(
+                        if daro_enabled:
+                            mu_id_row = model_inputs.get("daro_mu_id_row", None)
+                            inv_group_tokens_row = model_inputs.get("daro_inv_group_tokens_row", None)
+                            active_mu_ids = mini_active_mu_ids_tensor
+
+                            if not isinstance(mu_id_row, torch.Tensor):
+                                raise ValueError(
+                                    "DARO requires microbatch daro_mu_id_row tensor from mini-batch context."
+                                )
+                            if not isinstance(inv_group_tokens_row, torch.Tensor):
+                                raise ValueError(
+                                    "DARO requires microbatch daro_inv_group_tokens_row tensor from mini-batch context."
+                                )
+                            if mu_id_row.ndim != 1 or mu_id_row.shape[0] != int(response_mask.shape[0]):
+                                raise ValueError(
+                                    "DARO microbatch daro_mu_id_row shape mismatch: "
+                                    f"{tuple(mu_id_row.shape)} vs B_micro={int(response_mask.shape[0])}"
+                                )
+                            if (
+                                inv_group_tokens_row.ndim != 1
+                                or inv_group_tokens_row.shape[0] != int(response_mask.shape[0])
+                            ):
+                                raise ValueError(
+                                    "DARO microbatch daro_inv_group_tokens_row shape mismatch: "
+                                    f"{tuple(inv_group_tokens_row.shape)} vs B_micro={int(response_mask.shape[0])}"
+                                )
+                            if active_mu_ids is None:
+                                active_mu_ids = torch.empty(
+                                    (0,),
                                     device=response_mask.device,
                                     dtype=torch.long,
                                 )
-                                inv_group_tokens_row = inv_group_tokens_row.to(
+                            else:
+                                active_mu_ids = active_mu_ids.to(
                                     device=response_mask.device,
-                                    dtype=token_level_rewards.dtype,
+                                    dtype=torch.long,
                                 )
-
-                                loss_extra_kwargs["daro_mu_id_row"] = mu_id_row
-                                loss_extra_kwargs["composer_daro_mu_id_row"] = mu_id_row
-                                loss_extra_kwargs["daro_inv_group_tokens_row"] = inv_group_tokens_row
-                                loss_extra_kwargs["composer_daro_inv_group_tokens_row"] = inv_group_tokens_row
-                                loss_extra_kwargs["daro_active_mu_ids"] = active_mu_ids
-                                loss_extra_kwargs["composer_daro_active_mu_ids"] = active_mu_ids
-                                if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
-                                    preview_n = min(8, int(mu_id_row.shape[0]))
-                                    print(
-                                        "[composer-debug][daro] micro_batch payload: "
-                                        f"micro_idx={micro_debug_idx} "
-                                        f"B_micro={int(response_mask.shape[0])} "
-                                        f"active_mu_ids={active_mu_ids.detach().cpu().tolist()} "
-                                        f"mu_id_row[:{preview_n}]={mu_id_row[:preview_n].detach().cpu().tolist()} "
-                                        f"inv_N_row[:{preview_n}]={inv_group_tokens_row[:preview_n].detach().cpu().tolist()}"
-                                    )
-                        elif daro_enabled:
-                            raise ValueError(
-                                "DARO requires uid in microbatch model_inputs."
+                            mu_id_row = mu_id_row.to(
+                                device=response_mask.device,
+                                dtype=torch.long,
                             )
+                            inv_group_tokens_row = inv_group_tokens_row.to(
+                                device=response_mask.device,
+                                dtype=token_level_rewards.dtype,
+                            )
+
+                            loss_extra_kwargs["daro_mu_id_row"] = mu_id_row
+                            loss_extra_kwargs["composer_daro_mu_id_row"] = mu_id_row
+                            loss_extra_kwargs["daro_inv_group_tokens_row"] = inv_group_tokens_row
+                            loss_extra_kwargs["composer_daro_inv_group_tokens_row"] = inv_group_tokens_row
+                            loss_extra_kwargs["daro_active_mu_ids"] = active_mu_ids
+                            loss_extra_kwargs["composer_daro_active_mu_ids"] = active_mu_ids
+                            if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+                                preview_n = min(8, int(mu_id_row.shape[0]))
+                                print(
+                                    "[composer-debug][daro] micro_batch payload: "
+                                    f"micro_idx={micro_debug_idx} "
+                                    f"B_micro={int(response_mask.shape[0])} "
+                                    f"active_mu_ids={active_mu_ids.detach().cpu().tolist()} "
+                                    f"mu_id_row[:{preview_n}]={mu_id_row[:preview_n].detach().cpu().tolist()} "
+                                    f"inv_N_row[:{preview_n}]={inv_group_tokens_row[:preview_n].detach().cpu().tolist()}"
+                                )
+                        # elif daro_enabled:
+                        #     raise ValueError(
+                        #         "DARO requires uid in microbatch model_inputs."
+                        #     )
                         if rollout_n is not None:
                             loss_extra_kwargs["n"] = rollout_n
                             loss_extra_kwargs["rollout_n"] = rollout_n

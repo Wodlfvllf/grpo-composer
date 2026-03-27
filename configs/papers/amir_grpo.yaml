@@ -19,6 +19,9 @@ algorithm:
   adv_estimator: grpo
 actor_rollout_ref:
   actor:
+    use_kl_loss: true
+    kl_loss_coef: 0.0
+    kl_loss_type: kl
     policy_loss:
       loss_mode: composer
   rollout:
