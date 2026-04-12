@@ -22,7 +22,7 @@ algorithm:
 actor_rollout_ref:
   rollout:
     # DRA-GRPO needs >1 completions per prompt to compute pairwise similarity.
-    n: 8
+    n: 4
   actor:
     policy_loss:
       loss_mode: composer
@@ -34,3 +34,6 @@ composer:
   reg_coef: 0.01
   reward_pipeline: ["diversity_adjusted"]
   diversity_epsilon: 1e-6
+
+trainer:
+  balance_batch: false

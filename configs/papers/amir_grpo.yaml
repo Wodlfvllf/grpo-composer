@@ -34,3 +34,5 @@ composer:
   reg_coef: 0.1
   beta_dpo: 0.1
   delta_reward: 0.0
+trainer:
+  balance_batch: false

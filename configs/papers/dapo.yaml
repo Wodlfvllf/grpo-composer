@@ -25,3 +25,6 @@ composer:
   agg_mode: global_token
   regularizer: none
   reg_coef: 0.0
+
+trainer:
+  balance_batch: false

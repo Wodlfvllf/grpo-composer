@@ -24,3 +24,5 @@ composer:
   reg_coef: 0.0
   difficulty_bins: 10
   difficulty_weight_c: 1.0
+trainer:
+  balance_batch: false

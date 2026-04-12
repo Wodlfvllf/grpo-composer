@@ -20,7 +20,7 @@ actor_rollout_ref:
     policy_loss:
       loss_mode: composer
   rollout:
-    n: 8
+    n: 4
 composer:
   clip_ratio: 0.2
   clip_mode: symmetric
@@ -33,3 +33,6 @@ composer:
   difficulty_rho_0: 0.75
   composer_reward_pipeline:
   - length_dependent
+
+trainer:
+  balance_batch: false

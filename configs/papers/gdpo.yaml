@@ -36,3 +36,6 @@ composer:
   reg_coef: 0.01
   composer_reward_pipeline:
   - multi_reward
+
+trainer:
+  balance_batch: false
