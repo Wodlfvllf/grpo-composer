@@ -16,8 +16,6 @@ Input:
 Output:
     torch.Tensor of shape (batch_size, num_completions)
 """
-
-import os
 import torch
 import torch.nn.functional as F
 from .base import RewardCalculator
@@ -25,101 +23,64 @@ from .base import RewardCalculator
 
 class DiversityAdjustedRewardCalculator(RewardCalculator):
     """
-    DRA-GRPO: Diversity-Aware Reward Adjustment using Submodular Mutual Information.
-    
-    Penalizes redundant responses by multiplying reward by (1 - SMI), where SMI
-    measures similarity to other responses in the group.
-    
-    Args:
-        rewards: torch.Tensor, shape (batch_size, num_completions)
-        embedding: torch.Tensor, shape (batch_size, num_completions, hidden_size)
-        epsilon: Small constant for numerical stability (default: 1e-6)
+    DRA-GRPO: Diversity-Aware Reward Adjustment (paper-faithful)
+
+    Formula:
+        R'(q, o_i) = R(q, o_i) / (1 + SMI(o_i, C \ {o_i}))
+
+    where:
+        SMI(o_i, C \ {o_i}) = sum_{j != i} cos_sim(e_i, e_j)
     """
-    
+
     def __init__(
-        self, 
-        rewards: torch.Tensor, 
-        embedding: torch.Tensor, 
-        epsilon: float = 1e-6, 
+        self,
+        rewards: torch.Tensor,           # (B, G)
+        embedding: torch.Tensor,         # (B, G, D)
+        epsilon: float = 1e-6,
         **kwargs
-    ) -> None:
+    ):
         super().__init__(rewards, **kwargs)
         self.embedding = embedding
         self.epsilon = epsilon
-        
-        # Validate shapes
-        if rewards.ndim != 2:
-            raise ValueError(f"Rewards must be 2D, got shape {rewards.shape}")
-        if embedding.ndim != 3:
-            raise ValueError(f"Embedding must be 3D, got shape {embedding.shape}")
-        if rewards.shape[0] != embedding.shape[0]:
-            raise ValueError(
-                f"Batch size mismatch: rewards {rewards.shape[0]} vs embeddings {embedding.shape[0]}"
-            )
-        if rewards.shape[1] != embedding.shape[1]:
-            raise ValueError(
-                f"Group size mismatch: rewards {rewards.shape[1]} vs embeddings {embedding.shape[1]}"
-            )
 
-    def _compute_similarity(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """
-        Compute pairwise cosine similarity matrix.
-        
-        Args:
-            embeddings: shape (num_completions, hidden_size)
-        Returns:
-            sim_matrix: shape (num_completions, num_completions)
-        """
-        embeddings_norm = F.normalize(embeddings, p=2, dim=-1)
-        return embeddings_norm @ embeddings_norm.T
+        # Shape validation
+        if rewards.ndim != 2:
+            raise ValueError(f"Rewards must be 2D, got {rewards.shape}")
+        if embedding.ndim != 3:
+            raise ValueError(f"Embedding must be 3D, got {embedding.shape}")
+        if rewards.shape[:2] != embedding.shape[:2]:
+            raise ValueError("Rewards and embeddings must align in (B, G)")
 
     def _calculate_smi(self) -> torch.Tensor:
         """
-        Calculate Submodular Mutual Information for all completions.
-        
-        SMI(o_i) = sum_{j != i} similarity(o_i, o_j)
-        
+        Vectorized SMI computation.
+
         Returns:
-            smi_scores: shape (batch_size, num_completions)
+            smi_scores: (B, G)
         """
-        batch_size, num_completions, _ = self.embedding.shape
-        smi_scores = torch.zeros(
-            batch_size, num_completions, 
-            device=self.rewards.device, 
-            dtype=self.rewards.dtype
-        )
-        
-        for batch_idx in range(batch_size):
-            sim_matrix = self._compute_similarity(self.embedding[batch_idx])
-            # Sum of row minus diagonal (exclude self-similarity)
-            smi_scores[batch_idx] = sim_matrix.sum(dim=-1) - torch.diagonal(sim_matrix)
-        
+        # Step 1: normalize embeddings
+        emb = F.normalize(self.embedding, p=2, dim=-1)  # (B, G, D)
+
+        # Step 2: similarity matrix
+        sim_matrix = torch.matmul(emb, emb.transpose(-1, -2))  # (B, G, G)
+
+        # Step 3: subtract diagonal (self-similarity = 1)
+        diag = torch.diagonal(sim_matrix, dim1=-2, dim2=-1)  # (B, G)
+
+        smi_scores = sim_matrix.sum(dim=-1) - diag  # (B, G)
+
         return smi_scores
 
     def compute_rewards(self) -> torch.Tensor:
         """
-        Apply DRA-GRPO diversity adjustment.
-        
+        Apply DRA reward adjustment.
+
         Returns:
-            adjusted_rewards: shape (batch_size, num_completions)
+            adjusted_rewards: (B, G)
         """
-        import os
         smi_scores = self._calculate_smi()
-        
-        # DRA-GRPO paper formulation: R' = R * (1 - SMI)
-        # However, SMI can be > 1.0 depending on similarity and group size.
-        # We clamp (1 - SMI) between [epsilon, 1.0] to prevent negative rewards
-        # and ensure a valid scaling factor. 
-        # But wait! If SMI is 0, (1 - SMI) is 1.0 (no penalty).
-        
-        multiplier = torch.clamp(1.0 - smi_scores, min=self.epsilon, max=1.0)
-        
-        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
-            print(f"🧮 [DEBUG] DRA-GRPO SMI calculation:")
-            print(f"          Raw SMI scores min: {smi_scores.min().item():.4f}")
-            print(f"          Raw SMI scores mean: {smi_scores.mean().item():.4f}")
-            print(f"          Raw SMI scores max: {smi_scores.max().item():.4f}")
-            print(f"          Multiplier mean: {multiplier.mean().item():.4f}")
-            print(f"          SMI shape: {smi_scores.shape}")
-            
+
+        # ---- Core formula (paper EXACT) ----
+        multiplier = 1.0 / (1.0 + smi_scores + self.epsilon)
+
         return self.rewards * multiplier

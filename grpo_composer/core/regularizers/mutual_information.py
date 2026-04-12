@@ -56,7 +56,6 @@ class MutualInformationRegularizer(Regularizer):
         self,
         log_probs: torch.Tensor,        # (B, G, T)
         ref_log_probs: torch.Tensor,    # (B, G, T)
-        rewards: torch.Tensor,          # (B, G)
         mask: torch.Tensor,             # (B, G, T)
         log_probs_aug: torch.Tensor = None, # (B, G, T) - From z-conditioned generation
         mask_aug: torch.Tensor = None,      # (B, G, T) - Mask for augmented generation
