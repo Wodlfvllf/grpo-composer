@@ -1,6 +1,7 @@
 import torch
 import random
 from typing import Any
+import os
 
 class InfoGRPORolloutAugmentor:
     
@@ -13,7 +14,9 @@ class InfoGRPORolloutAugmentor:
         """
         def hooked_generate(batch: Any):
             # batch is a DataProto instance.
-            print("[Info-GRPO] Intercepting generation to inject latent seeds into augmented prompts...")
+            debug = os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
+            if debug:
+                print("[Info-GRPO] Intercepting generation to inject latent seeds into augmented prompts...")
             
             input_ids = batch.batch["input_ids"]
             attention_mask = batch.batch["attention_mask"]

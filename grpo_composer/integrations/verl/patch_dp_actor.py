@@ -10,16 +10,35 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
+import logging
+logger = logging.getLogger(__file__)
+logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 _VERL_IMPORT_ERROR: Optional[Exception] = None
 try:
     from verl.workers.actor.dp_actor import DataParallelPPOActor
+    import verl.utils.torch_functional as verl_F
+    from verl import DataProto
+    from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+    from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
+    from verl.utils.device import get_device_id, get_device_name
+    from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
+    from verl.utils.profiler import GPUMemoryLogger
+    from verl.utils.py_functional import append_to_dict
+    from verl.utils.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
+    from verl.utils.torch_dtypes import PrecisionType
+    from verl.utils.torch_functional import logprobs_from_logits
+    from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
+    from verl.workers.actor import BasePPOActor
+    from verl.workers.config import ActorConfig
+
 except Exception as exc:  # pragma: no cover - exercised when verl is absent
     _VERL_IMPORT_ERROR = exc
     DataParallelPPOActor = None
 
 _ORIGINAL_DP_ACTOR_UPDATE_POLICY = None
-
+_ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB = None
+_ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH = None
 
 def _strict_validation_enabled() -> bool:
     return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
@@ -510,7 +529,7 @@ def _patch_dp_actor_update_policy() -> None:
 
             temperature = data.meta_info["temperature"]  # required to avoid silent error
 
-            select_keys = [
+            required_select_keys = [
                 "responses",
                 "response_mask",
                 "input_ids",
@@ -519,6 +538,10 @@ def _patch_dp_actor_update_policy() -> None:
                 "old_log_probs",
                 "advantages",
             ]
+            select_keys = list(required_select_keys)
+            for key in ("hidden_states", "response_hidden_states"):
+                if key in data.batch.keys():
+                    select_keys.append(key)
             if self.config.use_kl_loss or "ref_log_prob" in data.batch.keys():
                 select_keys.append("ref_log_prob")
             if "rollout_is_weights" in data.batch.keys():
@@ -723,6 +746,10 @@ def _patch_dp_actor_update_policy() -> None:
                         old_log_prob = model_inputs["old_log_probs"]
                         advantages = model_inputs["advantages"]
 
+                        hidden_states = model_inputs.get("response_hidden_states", None)
+                        if hidden_states is None:
+                            hidden_states = model_inputs.get("hidden_states", None)
+
                         if os.environ.get("GRPO_COMPOSER_DEBUG_UID_MICROBATCH", "0") == "1":
                             max_uid_logs = 8
                             try:
@@ -844,9 +871,28 @@ def _patch_dp_actor_update_policy() -> None:
                         else:
                             loss_scale_factor = 1 / self.gradient_accumulation
 
-                        entropy, log_prob = self._forward_micro_batch(
+                        forward_output = self._forward_micro_batch(
                             model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
                         )
+                        if not isinstance(forward_output, (tuple, list)):
+                            raise TypeError("Expected tuple output from _forward_micro_batch.")
+                        if len(forward_output) == 3:
+                            entropy, log_prob, forward_hidden_states = forward_output
+                        elif len(forward_output) == 2:
+                            entropy, log_prob = forward_output
+                            forward_hidden_states = None
+                        else:
+                            raise ValueError(
+                                "Unexpected _forward_micro_batch output length: "
+                                f"{len(forward_output)}"
+                            )
+
+                        if hidden_states is None:
+                            hidden_states = forward_hidden_states
+                        if hidden_states is None:
+                            raise ValueError(
+                                "Couldn't find hidden states in micro-batch inputs or forward output."
+                            )
 
                         if hasattr(self.config, "use_rollout_log_probs") and self.config.use_rollout_log_probs:
                             old_log_prob = model_inputs["old_log_probs"]
@@ -956,6 +1002,7 @@ def _patch_dp_actor_update_policy() -> None:
                         pg_loss, pg_metrics = policy_loss_fn(
                             old_log_prob=old_log_prob,
                             log_prob=log_prob,
+                            hidden_states=hidden_states,
                             advantages=advantages,
                             response_mask=response_mask,
                             loss_agg_mode=loss_agg_mode,
@@ -1024,15 +1071,274 @@ def _patch_dp_actor_update_policy() -> None:
 
     DataParallelPPOActor.update_policy = _composer_update_policy
 
+def _patch_dp_actor_forward_microbatch_compute_log_prob() -> None:
+    global _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB
+    global _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH
+    if DataParallelPPOActor is None:
+        return
+    if _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB is not None:
+        return
+
+    _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB = DataParallelPPOActor.compute_log_prob
+    _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH = DataParallelPPOActor._forward_micro_batch
+
+    def _forward_micro_batch(
+        self, micro_batch, temperature, calculate_entropy=False
+    ):
+        response_length = micro_batch["responses"].size(-1)
+
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in micro_batch:
+            from verl.utils.model import extract_multi_modal_inputs
+            multi_modal_inputs = extract_multi_modal_inputs(micro_batch["multi_modal_inputs"])
+
+        with torch.autocast(device_type=self.device_name, dtype=self.param_dtype):
+            input_ids = micro_batch["input_ids"]
+            batch_size, seqlen = input_ids.shape
+            attention_mask = micro_batch["attention_mask"]
+            position_ids = micro_batch["position_ids"]
+
+            entropy = None
+
+            if position_ids.dim() == 3:
+                position_ids = position_ids.transpose(0, 1)
+
+            # =========================
+            # RMPAD PATH
+            # =========================
+            if self.use_remove_padding:
+
+                input_ids_rmpad, indices, cu_seqlens, *_ = unpad_input(
+                    input_ids.unsqueeze(-1), attention_mask
+                )
+                input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+
+                if position_ids.dim() == 3:
+                    position_ids_rmpad = (
+                        index_first_axis(rearrange(position_ids, "c b s -> (b s) c"), indices)
+                        .transpose(0, 1)
+                        .unsqueeze(1)
+                    )
+                else:
+                    position_ids_rmpad = index_first_axis(
+                        rearrange(position_ids.unsqueeze(-1), "b s -> (b s)"), indices
+                    ).transpose(0, 1)
+
+                input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)
+
+                if self.use_ulysses_sp:
+                    input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(
+                        input_ids_rmpad,
+                        position_ids_rmpad=position_ids_rmpad,
+                        sp_size=self.ulysses_sequence_parallel_size,
+                    )
+                    input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(
+                        input_ids_rmpad_rolled,
+                        position_ids_rmpad=None,
+                        sp_size=self.ulysses_sequence_parallel_size,
+                    )
+
+                input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)
+
+                extra_args = {}
+                if self.use_fused_kernels:
+                    extra_args["temperature"] = temperature
+                    extra_args["return_dict"] = True
+
+                output = self.actor_module(
+                    input_ids=input_ids_rmpad,
+                    attention_mask=None,
+                    position_ids=position_ids_rmpad,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    output_hidden_states=True,
+                    return_dict=True,
+                    **extra_args,
+                )
+
+                # ===== log probs =====
+                if self.use_fused_kernels:
+                    log_probs = output.log_probs.squeeze(0)
+                    entropy_rmpad = output.entropy.squeeze(0) if calculate_entropy else None
+
+                    if not hasattr(output, "hidden_states") or output.hidden_states is None:
+                        raise ValueError("Hidden states not available with fused kernels")
+                    hidden_rmpad = output.hidden_states[-1]
+
+                else:
+                    logits_rmpad = output.logits.squeeze(0)
+                    logits_rmpad.div_(temperature)
+
+                    log_probs = logprobs_from_logits(
+                        logits=logits_rmpad,
+                        labels=input_ids_rmpad_rolled,
+                        inplace_backward=not calculate_entropy,
+                    )
+
+                    if calculate_entropy:
+                        entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)
+
+                    if not hasattr(output, "hidden_states") or output.hidden_states is None:
+                        raise ValueError("Hidden states not available without fused kernels")
+                    hidden_rmpad = output.hidden_states[-1]  # (total_nnz, d)
+
+                # ===== gather sp =====
+                if self.use_ulysses_sp:
+                    log_probs = gather_outputs_and_unpad(log_probs, 0, 0, pad_size)
+                    hidden_rmpad = gather_outputs_and_unpad(hidden_rmpad, 0, 0, pad_size)
+                    if calculate_entropy:
+                        entropy_rmpad = gather_outputs_and_unpad(entropy_rmpad, 0, 0, pad_size)
+
+                # ===== restore shape =====
+                full_log_probs = pad_input(
+                    hidden_states=log_probs.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                )
+
+                full_hidden = pad_input(
+                    hidden_states=hidden_rmpad,
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                )
+
+                if calculate_entropy:
+                    full_entropy = pad_input(
+                        hidden_states=entropy_rmpad.unsqueeze(-1),
+                        indices=indices,
+                        batch=batch_size,
+                        seqlen=seqlen,
+                    )
+
+                # ===== slice =====
+                log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]
+                hidden_states = full_hidden.squeeze(-1)[:, -response_length:, :]
+
+                if calculate_entropy:
+                    entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]
+
+            # =========================
+            # NON-RMPAD PATH
+            # =========================
+            else:
+                extra_args = {}
+                if self.use_fused_kernels:
+                    extra_args["temperature"] = temperature
+                    extra_args["return_dict"] = True
+
+                output = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    output_hidden_states=True,
+                    return_dict=True,
+                    **extra_args,
+                )
+
+                hidden_states_all = output.hidden_states[-1]  # (B, T, d)
+
+                if self.use_fused_kernels:
+                    log_probs = output.log_probs[:, -response_length - 1 : -1]
+                    entropy = output.entropy[:, -response_length - 1 : -1] if calculate_entropy else None
+
+                else:
+                    logits = output.logits
+                    logits.div_(temperature)
+                    logits = logits[:, -response_length - 1 : -1, :]
+                    log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+
+                    if calculate_entropy:
+                        entropy = verl_F.entropy_from_logits(logits)
+
+                hidden_states = hidden_states_all[:, -response_length:, :]
+
+        return entropy, log_probs, hidden_states
+
+    @GPUMemoryLogger(role="dp actor", logger=logger)
+    def patched_compute_log_prob(self, data: DataProto, calculate_entropy=False):
+        self.actor_module.eval()
+
+        micro_batch_size = data.meta_info["micro_batch_size"]
+        temperature = data.meta_info["temperature"]
+        use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
+        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
+
+        data = data.select(
+            batch_keys=["responses", "input_ids", "attention_mask", "position_ids"],
+            non_tensor_batch_keys=non_tensor_select_keys,
+        )
+
+        if use_dynamic_bsz:
+            max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
+            micro_batches, batch_idx_list = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(micro_batch_size)
+
+        log_probs_lst = []
+        entropy_lst = []
+        hidden_lst = []
+
+        for micro_batch in micro_batches:
+            micro_batch = micro_batch.to(get_device_id())
+            model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+
+            with torch.no_grad():
+                entropy, log_probs, hidden_states = self._forward_micro_batch(
+                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                )
+
+            log_probs_lst.append(log_probs)
+            hidden_lst.append(hidden_states)
+
+            if calculate_entropy:
+                entropy_lst.append(entropy)
+
+        log_probs = torch.concat(log_probs_lst, dim=0)
+        hidden_states = torch.concat(hidden_lst, dim=0)
+
+        entropys = None
+        if calculate_entropy:
+            entropys = torch.concat(entropy_lst, dim=0)
+
+        if use_dynamic_bsz:
+            log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
+            hidden_states = restore_dynamic_batch(hidden_states, batch_idx_list)
+            if calculate_entropy:
+                entropys = restore_dynamic_batch(entropys, batch_idx_list)
+
+        # expose embeddings
+        data.batch["hidden_states"] = hidden_states
+        data.batch["response_hidden_states"] = hidden_states
+
+        return log_probs, entropys, hidden_states
+
+    DataParallelPPOActor._forward_micro_batch = _forward_micro_batch
+    DataParallelPPOActor.compute_log_prob = patched_compute_log_prob
+
+
 
 def unpatch_dp_actor_update_policy() -> None:
     """Restore original veRL DataParallelPPOActor.update_policy if patched."""
     global _ORIGINAL_DP_ACTOR_UPDATE_POLICY
+    global _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB
+    global _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH
 
     if DataParallelPPOActor is None:
         return
-    if _ORIGINAL_DP_ACTOR_UPDATE_POLICY is None:
-        return
 
-    DataParallelPPOActor.update_policy = _ORIGINAL_DP_ACTOR_UPDATE_POLICY
-    _ORIGINAL_DP_ACTOR_UPDATE_POLICY = None
+    if _ORIGINAL_DP_ACTOR_UPDATE_POLICY is not None:
+        DataParallelPPOActor.update_policy = _ORIGINAL_DP_ACTOR_UPDATE_POLICY
+        _ORIGINAL_DP_ACTOR_UPDATE_POLICY = None
+
+    if _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB is not None:
+        DataParallelPPOActor.compute_log_prob = _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB
+        _ORIGINAL_DP_ACTOR_COMPUTE_LOG_PROB = None
+
+    if _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH is not None:
+        DataParallelPPOActor._forward_micro_batch = _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH
+        _ORIGINAL_DP_ACTOR_FORWARD_MICROBATCH = None
