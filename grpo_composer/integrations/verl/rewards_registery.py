@@ -364,17 +364,26 @@ def _apply_diversity_adjusted_reward_transform(data: Any, config: Any) -> None:
     # DRA-GRPO uses pairwise similarity of output embeddings.
     # If the generator doesn't emit true hidden state embeddings, we approximate 
     # similarity using a Bag-of-Words feature hash on the generated tokens.
-    embeddings = _maybe_get(data, "embeddings")
+    embeddings = _maybe_get(data, "response_hidden_states")
     if embeddings is None:
-        responses = data.batch["responses"]
-        hash_bins = 4096
-        hashed = responses % hash_bins
-        
-        # Apply response mask so padding tokens don't contribute to similarity
-        pseudo_embeddings = torch.zeros((responses.shape[0], hash_bins), device=responses.device)
-        weights = response_mask.float().to(responses.device)
-        pseudo_embeddings.scatter_add_(1, hashed, weights)
-        embeddings = pseudo_embeddings
+        # Backward-compatible alias used by earlier trainer/worker patches.
+        embeddings = _maybe_get(data, "hidden_states")
+    if embeddings is None:
+        raise ValueError(
+            "No hidden states found in the data. DRA-GRPO requires hidden states to compute pairwise similarity."
+        )
+    elif embeddings.ndim == 3:
+        mask = response_mask.unsqueeze(-1)  # (B, T, 1)
+        pooled_embeddings = (embeddings * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+    elif embeddings.ndim == 2:
+        pooled_embeddings = embeddings
+    else:
+        raise ValueError(
+            f"Unexpected embedding rank for DRA-GRPO: {tuple(embeddings.shape)}. Expected (B,T,D) or (B,D)."
+        )
+
+    if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+        print(pooled_embeddings.shape)
 
     epsilon = float(_cfg_get(config, "diversity_epsilon", 1e-6))
     adjusted = torch.zeros_like(sequence_rewards)
@@ -383,7 +392,7 @@ def _apply_diversity_adjusted_reward_transform(data: Any, config: Any) -> None:
     for indices in groups.values():
         idx = torch.tensor(indices, device=sequence_rewards.device, dtype=torch.long)
         grp_rewards = sequence_correctness[idx].unsqueeze(0)
-        grp_embeddings = embeddings[idx].unsqueeze(0).float()
+        grp_embeddings = pooled_embeddings[idx].unsqueeze(0).float()
         
         calculator = DiversityAdjustedRewardCalculator(
             rewards=grp_rewards, 

@@ -19,7 +19,7 @@ from .loss_context import (
     config_get_context as _config_get_context,
 )
 from .utils import (
-    _as_tensor,
+    _as_tensor, 
     _compute_tr_token_weights,
     _validate_tensor_shape,
 )
@@ -168,45 +168,12 @@ def reg_mutual_info(log_prob, old_log_prob, response_mask, config, **kwargs):
         active_old_log_prob = old_log_prob.view(B_prompts, G_total, T_dim)[:, :G, :].reshape(B_prompts * G, T_dim)
         
     else:
-        # Legacy Path: Explicit Tensors
-        active_log_prob = log_prob
-        active_response_mask = response_mask
-        active_old_log_prob = old_log_prob
-        
-        log_probs_aug = kwargs.get("log_probs_aug")
-        if log_probs_aug is None:
-            log_probs_aug = kwargs.get("composer_log_probs_aug")
-        if log_probs_aug is None:
-            log_probs_aug = _config_get_context(config, "_composer_log_probs_aug", None)
+        raise ValueError("regularizer='mutual_info' requires G_total to be even for dynamic Info-GRPO mutual info splitting.")
 
-
-        mask_aug = kwargs.get("mask_aug")
-        if mask_aug is None:
-            mask_aug = kwargs.get("composer_mask_aug")
-        if mask_aug is None:
-            mask_aug = _config_get_context(config, "_composer_mask_aug", None)
-
-        if log_probs_aug is None or mask_aug is None:
-            raise ValueError(
-                "regularizer='mutual_info' requires augmented rollout tensors natively or via the info_grpo hook. "
-                "Provide log_probs_aug and mask_aug."
-            )
-
-        log_probs_aug = _as_tensor(log_probs_aug, name="log_probs_aug", device=log_prob.device)
-        mask_aug = _as_tensor(mask_aug, name="mask_aug", device=log_prob.device)
-        _validate_tensor_shape(log_probs_aug, ndim=(2,), first_dim=log_prob.shape[0], name="log_probs_aug")
-        _validate_tensor_shape(mask_aug, ndim=(2,), first_dim=log_prob.shape[0], name="mask_aug")
-        if log_probs_aug.shape != mask_aug.shape:
-            raise ValueError(
-                f"log_probs_aug and mask_aug shape mismatch: {log_probs_aug.shape} vs {mask_aug.shape}"
-            )
-
-    dummy_rewards = torch.zeros(log_prob.shape[0], device=log_prob.device)
     return regularizer.compute_regularization(
-        log_probs=log_prob,
-        ref_log_probs=old_log_prob,
-        rewards=dummy_rewards,
-        mask=response_mask,
+        log_probs=active_log_prob,
+        ref_log_probs=active_old_log_prob,
+        mask=active_response_mask,
         log_probs_aug=log_probs_aug,
         mask_aug=mask_aug,
     )
@@ -221,11 +188,9 @@ def reg_log_weight(log_prob, old_log_prob, response_mask, config, **kwargs):
 
     weights = _as_tensor(weights, name="difficulty_weights", device=log_prob.device)
     regularizer = LogWeightRegularizer(num_bins=weights.shape[0])
-    dummy_rewards = torch.zeros(log_prob.shape[0], device=log_prob.device)
     return regularizer.compute_regularization(
         log_probs=log_prob,
         ref_log_probs=old_log_prob,
-        rewards=dummy_rewards,
         mask=response_mask,
         weights=weights,
     )
