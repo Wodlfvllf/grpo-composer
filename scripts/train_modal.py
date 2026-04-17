@@ -52,6 +52,7 @@ import yaml
 # mounted at /root/grpo_composer (or baked elsewhere by legacy image builder).
 # Ensure repository roots are present on sys.path before local package imports.
 _SCRIPT_PATH = Path(__file__).resolve()
+
 _REPO_PATH_CANDIDATES = [
     _SCRIPT_PATH.parents[1],                # normal local layout: repo/scripts/train_modal.py
     _SCRIPT_PATH.parent / "grpo_composer",  # modal copied script at /root/train_modal.py
@@ -64,8 +65,7 @@ for _candidate in _REPO_PATH_CANDIDATES:
         if candidate_str not in sys.path:
             sys.path.insert(0, candidate_str)
 
-from grpo_composer.config.sanity import run_preflight_sanity_checks
-from grpo_composer.runtime_stack import (
+from .runtime_stack import (
     CANONICAL_PIP_PACKAGES,
     runtime_summary_text,
     validate_runtime_stack,
@@ -75,6 +75,7 @@ from grpo_composer.runtime_stack import (
 _scripts_dir = str(Path(__file__).resolve().parent)
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
+    
 # In Modal container, files are copied to /root/grpo_composer/scripts/
 _remote_scripts = "/root/grpo_composer/scripts"
 if _remote_scripts not in sys.path:
@@ -414,14 +415,6 @@ def run_training(
 
     if extra_override_items:
         overrides.extend(extra_override_items)
-
-    warnings = run_preflight_sanity_checks(
-        config_path=config_path,
-        overrides=overrides,
-        train_file=train_files,
-    )
-    for warning in warnings:
-        print(f"[sanity-warning] {warning}")
 
     command = ["python", "scripts/train_grpo.py", *overrides]
     print(
