@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from launcher_common import (
+from scripts.launcher_common import (
     build_launcher_env,
     build_train_grpo_command,
     build_training_overrides,
 )
 
-from prepare_dataset import _prepare_dataset
+from scripts.prepare_dataset import _prepare_dataset
 
 
 def prepare_dataset(train_files: str, val_files: str, dataset_preset: str):

@@ -4,14 +4,14 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from runtime_stack import (
+from scripts.runtime_stack import (
     runtime_summary_text,
     validate_runtime_stack,
 )
 
-from launcher_common import pkg_version
+from scripts.launcher_common import pkg_version
 
-from training_config import (
+from scripts.training_config import (
     prepare_dataset,
     build_training_config,
     build_command,

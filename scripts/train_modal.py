@@ -2,17 +2,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Ensure repo is importable inside Modal container
-REMOTE_ROOT = Path("/root/grpo_composer")
+# Add mounted repo to Python path
+REPO_ROOT = Path("/root/grpo_composer")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-if str(REMOTE_ROOT) not in sys.path:
-    sys.path.insert(0, str(REMOTE_ROOT))
-
-
-from modal_app import app, image, checkpoint_volume, GPU_CONFIG, TIMEOUT_SEC
-from modal_app import REMOTE_ROOT, CHECKPOINT_ROOT
-
-from training_runner import run_training_pipeline
+from scripts.modal_app import (
+    app,
+    image,
+    checkpoint_volume,
+    GPU_CONFIG,
+    TIMEOUT_SEC,
+    CHECKPOINT_ROOT,
+)
+from scripts.training_runner import run_training_pipeline
+# from training_runner import run_training_pipeline 
 
 
 @app.function(
@@ -24,7 +28,7 @@ from training_runner import run_training_pipeline
 def run_training(**kwargs):
     return run_training_pipeline(
         **kwargs,
-        remote_root=REMOTE_ROOT,
+        remote_root=REPO_ROOT,
         checkpoint_root=CHECKPOINT_ROOT,
         wandb_enabled=True,
     )

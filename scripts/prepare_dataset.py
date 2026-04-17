@@ -2,6 +2,7 @@ import re
 
 from datasets import load_dataset
 from pathlib import Path
+from scripts.modal_app import DATA_ROOT
 
 def _extract_gsm8k_solution(answer: str) -> str:
     match = re.search(r"####\s*(-?[0-9\.,]+)", answer)

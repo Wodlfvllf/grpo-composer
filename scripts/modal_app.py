@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 import modal
 
-from runtime_stack import CANONICAL_PIP_PACKAGES
+from scripts.runtime_stack import CANONICAL_PIP_PACKAGES
 
 APP_NAME = "grpo-composer-train"
 REMOTE_ROOT = Path("/root/grpo_composer")
 CHECKPOINT_ROOT = Path("/checkpoints")
-
+DATA_ROOT = Path("/tmp/grpo_data")
 
 def _parse_gpu_config(value: str) -> str | list[str]:
     parts = [part.strip() for part in value.split(",") if part.strip()]
