@@ -28,6 +28,7 @@ Mathematical Form:
         λ learnable → Adaptive
 """
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 from .base import AggregationFunction
@@ -85,16 +86,26 @@ class GroupLearnableAggregation(AggregationFunction):
         dtype = loss_per_token.dtype
 
         uid = kwargs.get("composer_uid")
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"uid: {uid}")
+
         if uid is None:
             uid = kwargs.get("uid")
         uid_groups = self._build_uid_groups(uid, batch_size)
 
         seq_lengths = mask.sum(dim=-1).to(dtype=torch.float32)
         lambda_value = self.lambda_
+
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"lambda_value: {lambda_value}")
+            
         if isinstance(lambda_value, torch.Tensor):
             lambda_value = lambda_value.to(device=device, dtype=torch.float32)
         r_value = self.r.to(device=device, dtype=torch.float32)
 
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"r_value: {r_value}")
+            
         f_lambda = torch.ones((batch_size,), device=device, dtype=torch.float32)
         for indices in uid_groups.values():
             idx = torch.tensor(indices, device=device, dtype=torch.long)
@@ -107,10 +118,20 @@ class GroupLearnableAggregation(AggregationFunction):
             grp_size = float(len(indices))
             f_lambda[idx] = grp_size * torch.softmax(g, dim=0)
 
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"f_lambda: {f_lambda}")
+
         weighted_loss = f_lambda.to(dtype=dtype).unsqueeze(-1) * loss_per_token * mask
+
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"weighted_loss: {weighted_loss}")
 
         # Global token normalization
         # weighted_loss.sum(): (B, T) → scalar
         # mask.sum(): (B, T) → scalar
         total_tokens = mask.sum()
+        
+        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
+            print(f"total_tokens: {total_tokens}")
+            
         return weighted_loss.sum() / (total_tokens + 1e-8)

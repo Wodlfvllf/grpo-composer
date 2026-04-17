@@ -10,6 +10,10 @@
 
 algorithm:
   adv_estimator: grpo
+  filter_groups:
+    enable: true
+    metric: seq_reward
+    max_num_gen_batches: 8
 actor_rollout_ref:
   actor:
     policy_loss:
