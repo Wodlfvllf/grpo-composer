@@ -102,3 +102,15 @@ def _prepare_light_eval_maths_dataset(output_dir : Path) -> tuple[str, str]:
     return str(train_path), str(val_path)
 
 
+def _prepare_dataset(train_files: str, val_files: str, dataset_preset: str) -> tuple[str, str]:
+    if train_files and val_files:
+        return train_files, val_files
+    if train_files or val_files:
+        raise ValueError("Provide both train_files and val_files, or provide neither and use dataset_preset.")
+
+    preset = dataset_preset.strip().lower()
+    if preset == "gsm8k":
+        return _prepare_gsm8k_dataset(DATA_ROOT / "gsm8k")
+    if preset in ("math", "math-hard", "lighteval"):
+        return _prepare_light_eval_maths_dataset(DATA_ROOT / "lighteval_math")
+    raise ValueError(f"Unsupported dataset_preset='{dataset_preset}'. Supported: gsm8k, math.")
