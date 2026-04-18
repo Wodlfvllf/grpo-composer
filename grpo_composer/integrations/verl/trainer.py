@@ -710,17 +710,15 @@ class PassThroughFlowPlugin(FlowPlugin):
 
 _FLOW_PLUGIN_REGISTRY: dict[str, type[FlowPlugin]] = {
     "default": PassThroughFlowPlugin,
-    "pvpo": PassThroughFlowPlugin,
-    "pvpo_grpo": PassThroughFlowPlugin,
-    "gapo": PassThroughFlowPlugin,
-    "gapo_grpo": PassThroughFlowPlugin,
 }
 
 # Lazy registration of plugins that import from this module to avoid circular imports.
 def _register_builtin_flow_plugins() -> None:
-    from .flow_plugins import InfoGRPOFlowPlugin
+    from .flow_plugins import InfoGRPOFlowPlugin, ReferenceRewardFlowPlugin
 
     _FLOW_PLUGIN_REGISTRY["info_grpo"] = InfoGRPOFlowPlugin
+    for name in ("pvpo", "pvpo_grpo", "gapo", "gapo_grpo"):
+        _FLOW_PLUGIN_REGISTRY[name] = ReferenceRewardFlowPlugin
 
 
 _register_builtin_flow_plugins()
@@ -924,17 +922,12 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         import verl.trainer.ppo.ray_trainer as ray_trainer_module
         import verl.utils.tracking as tracking_module
         import sys
-        from .ref_reward_runtime import ensure_reference_rewards, has_reference_rewards
 
-        # Force intercepting the locally scoped compute_advantage inside ray_trainer
-        original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
-        original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
         original_tracking = getattr(ray_trainer_module, "Tracking", None)
         original_tracking_utils = getattr(tracking_module, "Tracking", None)
         tracking_base_cls = original_tracking or original_tracking_utils
 
         composer_cfg = getattr(self, "composer_config_dict", {})
-        ref_reward_source = str(composer_cfg.get("reference_reward_source", "auto")).strip().lower()
         ranker = build_ranker(composer_cfg)
         default_local_dir = str(_cfg_get_nested(self.config, ("trainer", "default_local_dir"), "/checkpoints"))
         csv_path = str(Path(default_local_dir) / "metrics" / "training_metrics.csv")
@@ -952,40 +945,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             tracking_module.Tracking = ray_trainer_module.Tracking
             if "verl.utils.tracking" in sys.modules:
                 sys.modules["verl.utils.tracking"].Tracking = ray_trainer_module.Tracking
-
-            # Hook reference rewards if PVPO or if the config requests it dynamically
-            flow_names = _parse_flow_list(self.config)
-            needs_reference_reward = any(
-                name in ["pvpo", "pvpo_grpo", "gapo", "gapo_grpo"] or "reference_rewards" in name 
-                for name in flow_names
-            )
-
-            def hooked_compute_advantage(data, adv_estimator, *args, **kwargs):
-                debug = os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
-                if debug:
-                    print(f"[grpo_composer-debug] hooked_compute_advantage data={type(data)}")
-
-                if needs_reference_reward and not has_reference_rewards(data):
-                    ensure_reference_rewards(
-                        self,
-                        data,
-                        composer_cfg=composer_cfg,
-                        ref_reward_source=ref_reward_source,
-                        debug=debug,
-                    )
-
-                return composer_compute_advantage(
-                    data,
-                    adv_estimator,
-                    *args,
-                    ranker=ranker,
-                    tokenizer=self.tokenizer,
-                    **kwargs,
-                )
-
-            ray_trainer_module.compute_advantage = hooked_compute_advantage
-            if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = hooked_compute_advantage
 
             from omegaconf import OmegaConf
 
@@ -1359,7 +1318,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                                 )
 
 
-                            batch = hooked_compute_advantage(
+                            for plugin in self.composer_flow_plugins:
+                                batch = plugin.before_compute_advantage(self, batch)
+
+                            batch = composer_compute_advantage(
                                 batch,
                                 adv_estimator=self.config.algorithm.adv_estimator,
                                 gamma=self.config.algorithm.gamma,
@@ -1367,6 +1329,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                                 num_repeat=self.config.actor_rollout_ref.rollout.n,
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 config=self.config.algorithm,
+                                ranker=ranker,
+                                tokenizer=self.tokenizer,
                             )
 
                         # update critic
@@ -1494,12 +1458,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     num_gen_batches = 0
 
         finally:
-            if original_compute_advantage is not None:
-                ray_trainer_module.compute_advantage = original_compute_advantage
-                if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                    sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = original_compute_advantage
-            if original_compute_reward is not None:
-                ray_trainer_module.compute_reward = original_compute_reward
             if original_tracking is not None:
                 ray_trainer_module.Tracking = original_tracking
                 if "verl.trainer.ppo.ray_trainer" in sys.modules:

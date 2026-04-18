@@ -6,5 +6,6 @@ monkey-patch on a veRL method or an ``if/elif`` branch inside
 """
 
 from .info_grpo import InfoGRPOFlowPlugin
+from .reference_reward import ReferenceRewardFlowPlugin
 
-__all__ = ["InfoGRPOFlowPlugin"]
+__all__ = ["InfoGRPOFlowPlugin", "ReferenceRewardFlowPlugin"]
