@@ -90,6 +90,14 @@ def run_training_pipeline(
         wandb_enabled=wandb_enabled,
     )
 
+    if debug:
+        # Ray actors do not inherit the driver's env, so push the DAPO debug
+        # flag through OmegaConf (which is serialised into the
+        # ComposerTaskRunner / ComposerRayPPOTrainer actor process) instead of
+        # relying solely on env vars. _dapo_debug_enabled prefers the config
+        # value over GRPO_COMPOSER_DAPO_DEBUG.
+        overrides.append("++algorithm.filter_groups.debug=true")
+
     command = build_command(overrides)
 
     log_runtime_versions()
@@ -98,6 +106,8 @@ def run_training_pipeline(
 
     if debug:
         env["GRPO_COMPOSER_DEBUG"] = "1"
+        env["GRPO_COMPOSER_DAPO_DEBUG"] = "1"
+        env["GRPO_COMPOSER_STRICT_VALIDATION"] = "1"
 
     execute_training(command, env, remote_root)
 

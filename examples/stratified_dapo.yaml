@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────
+# Stratified-DAPO  (mix: stratified advantage × DAPO dynamic sampling × global-token)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   DAPO's dynamic sampling drops groups with std=0 (all-correct or all-wrong)
+#   and keeps generating until the batch has enough informative groups. But
+#   inside a kept batch, the *advantage normalisation* still mixes very
+#   different difficulty buckets together.
+#
+#   Stratified-GRPO's per-stratum normalisation eliminates that between-bucket
+#   bias. Combined with global_token aggregation (length-fair) we get:
+#     1. Filter:    only informative groups make it through  (DAPO)
+#     2. Normalise: each difficulty bucket scaled on its own  (Stratified)
+#     3. Aggregate: long CoT not penalised vs short          (global_token)
+#
+# WHY IT MIGHT WIN
+#   GSM8K problems have a wide difficulty spread. Vanilla GRPO mixes them in
+#   one normalisation pass, so easy-bucket noise dominates the advantage scale
+#   for hard problems. This recipe respects difficulty structure at every
+#   stage of the gradient pipeline.
+#
+# RISK
+#   Stratified advantage needs a stratum id per trajectory. The composer
+#   default falls back to a single stratum if none is provided — verify
+#   strata are actually being assigned in your data pipeline before trusting
+#   the gain.
+
+algorithm:
+  adv_estimator: stratified_grpo
+  filter_groups:
+    enable: true
+    metric: seq_reward
+    max_num_gen_batches: 8
+    debug: false        # flip to true to see DAPO oversampling logs
+
+actor_rollout_ref:
+  actor:
+    stratified_alpha: 1.0
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 4
+
+composer:
+  clip_mode: asymmetric
+  clip_ratio: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  agg_mode: global_token
+  regularizer: none
+  reg_coef: 0.0
+  stratified_alpha: 1.0
+
+trainer:
+  balance_batch: false

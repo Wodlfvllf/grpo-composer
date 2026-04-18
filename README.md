@@ -1,3 +1,206 @@
+# grpo-composer
+
+A modular library for **Group Relative Policy Optimization (GRPO)** and its
+many descendants, built as a thin composer on top of
+[veRL 0.6.1](https://github.com/volcengine/verl).
+
+Instead of forking veRL once per paper, every GRPO variant is expressed as a
+**combination of orthogonal components** — advantage estimator, clipping
+mode, aggregation, regulariser, reward pipeline — selected via YAML.
+Twenty-plus published methods are reproduced with the same code path; new
+methods are usually one config file.
+
+```
+                       ┌──────────── composer ────────────┐
+algorithm.adv_estimator│  advantages/   clipping/   regularizers/ │
+composer.clip_mode     │  aggregation/  rewards/    losses/       │
+composer.agg_mode      │                                          │
+composer.regularizer   └──────────────────────────────────────────┘
+                                       │
+                                       ▼
+                ┌─────── integrations/verl ────────────┐
+                │ ComposerDataParallelPPOActor          │
+                │ ComposerActorRolloutRefWorker         │
+                │ ComposerRayPPOTrainer                 │
+                │ ComposerTaskRunner (launch entrypoint)│
+                └───────────────────────────────────────┘
+                                       │
+                                       ▼
+                                  veRL 0.6.1
+```
+
+## Why
+
+Every paper after GRPO (DAPO, KRPO, λ-GRPO, GRPO-LEAD, Dr. GRPO, DARO,
+DRA-GRPO, Stratified-GRPO, …) tweaks a *small subset* of the same
+gradient pipeline: how the advantage is estimated, how the ratio is clipped,
+how tokens are aggregated, how the policy is regularised, how the reward is
+shaped. `grpo-composer` factors those axes apart so a paper becomes a
+3–10 line YAML, and a novel hybrid is the same.
+
+No method-table monkey-patching of veRL — composer behaviour is concentrated
+in three subclasses + one Hydra launcher (see
+[`grpo_composer/integrations/verl/`](grpo_composer/integrations/verl)).
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| [`grpo_composer/core/`](grpo_composer/core) | The composer building blocks: `advantages/`, `aggregation/`, `clipping/`, `losses/`, `regularizers/`, `rewards/` |
+| [`grpo_composer/integrations/verl/`](grpo_composer/integrations/verl) | The veRL plumbing: composer subclasses, flow plugins, registries, helpers |
+| [`configs/`](configs) | **Pinned** YAMLs — `base_grpo.yaml` and one file per published paper in [`configs/papers/`](configs/papers) |
+| [`examples/`](examples) | **Mutable** mix-and-match recipes — hand-designed novel combinations for experimentation |
+| [`scripts/`](scripts) | Launch entrypoints: `train_grpo.py` (Hydra), `train_local.py`, `train_modal.py` |
+| [`docs/`](docs) | Getting started + experiment guide |
+| [`tests/`](tests) | Unit tests for composer components |
+
+## Install
+
+```powershell
+git clone https://github.com/Wodlfvllf/grpo-composer.git
+cd grpo-composer
+pip install -e .
+# veRL is installed alongside (see pyproject.toml extras)
+```
+
+## Quick start
+
+Vanilla GRPO on GSM8K, 1 GPU, locally:
+
+```powershell
+python scripts/train_local.py --config configs/base_grpo.yaml
+```
+
+A published paper (DAPO, with dynamic sampling):
+
+```powershell
+python scripts/train_local.py --config configs/papers/dapo.yaml
+```
+
+A novel mix from the cookbook (Kalman baseline + DAPO clip + global-token agg):
+
+```powershell
+python scripts/train_local.py --config examples/kalman_dapo.yaml
+```
+
+On Modal:
+
+```powershell
+modal run scripts/train_modal.py --config examples/kalman_dapo.yaml --debug
+```
+
+`--debug` turns on `GRPO_COMPOSER_DEBUG`, `GRPO_COMPOSER_DAPO_DEBUG`, and
+`GRPO_COMPOSER_STRICT_VALIDATION` so you see full composer + DAPO oversampling
+diagnostics.
+
+## Implemented methods (papers)
+
+Each lives at `configs/papers/<name>.yaml` and reproduces the paper's
+hyper-parameters faithfully.
+
+| Method | Key axis touched |
+|---|---|
+| GRPO (DeepSeekMath) | baseline |
+| Dr. GRPO | normalisation |
+| DAPO | asymmetric clip + dynamic sampling |
+| DARO | difficulty-weighted aggregation |
+| GRPO-LEAD | length-dependent reward + difficulty-aware advantage |
+| KRPO | Kalman baseline |
+| λ-GRPO | learnable token aggregation |
+| TIC-GRPO | length-corrected advantage + trajectory clip |
+| TR-GRPO | weighted-trust clip |
+| Rank-GRPO | rank-enhanced reward |
+| Rewarding Unlikely | unlikeliness reward |
+| Posterior-GRPO | posterior-composite reward |
+| Stratified-GRPO | per-stratum advantage normalisation |
+| MS-GRPO | multi-scale advantage |
+| Info-GRPO | mutual-information regulariser |
+| Lambda-GRPO | learnable f_λ |
+| AMIR-GRPO, DRA-GRPO, GAPO, GDPO, KRPO, PVPO, SPO, X-RPO | see [`configs/papers/`](configs/papers) |
+
+A few methods that need trained reward models or multi-reward datasets are
+intentionally not yet wired up — they would require infrastructure beyond
+GSM8K-style single-signal training.
+
+## Composer cookbook
+
+The full menu of legal values per axis lives in
+[`configs/custom_mix.yaml`](configs/custom_mix.yaml). Six worked recipes
+that combine 2–4 components for specific failure modes live in
+[`examples/`](examples) — see its [README](examples/README.md) for the
+hypothesis / mechanism / risk on each one.
+
+Rules of thumb when designing your own:
+
+* `rollout.n >= 2` for any group method; `>= 4` for rank- or unlikeliness-
+  based rewards.
+* `trainer.balance_batch: false` always — group structure breaks otherwise
+  (the trainer enforces this for you).
+* `regularizer: none` removes the KL anchor; pair with a smaller clip range.
+* `agg_mode: global_token` is length-fair; `token_mean` over-weights short
+  responses.
+* Stack stabilisers from **different axes** (baseline + clip + KL), not two
+  on the same axis.
+
+## Architecture (1-screen tour)
+
+The **composer** lives in [`grpo_composer/core/`](grpo_composer/core). Each
+subfolder is one axis of the gradient pipeline:
+
+* `advantages/` — `standard`, `kalman`, `difficulty_aware`, `stratified`,
+  `length_corrected`, `multi_scale`, `decoupled`, `pvpo`, `unbiased`, …
+* `clipping/` — `symmetric`, `asymmetric`, `trajectory_level`,
+  `weighted_trust`
+* `aggregation/` — `token_mean`, `token_sum`, `global_token`,
+  `group_uniform`, `weighted_token`, `group_learnable`, `difficulty_weighted`,
+  `trajectory_level`
+* `regularizers/` — `kl_divergence`, `log_weight`, `mutual_information`,
+  `preference`
+* `rewards/` — `binary`, `unlikeliness`, `rank_enhanced`, `rts_based`,
+  `posterior_composite`, `length_dependent`, `multi_reward`,
+  `diversity_adjusted`, `frequency_aware`
+
+The **veRL integration** lives in
+[`grpo_composer/integrations/verl/`](grpo_composer/integrations/verl).
+Three composer subclasses own all of veRL's monkey-patch territory:
+
+* `ComposerDataParallelPPOActor` — `update_policy`, `_forward_micro_batch`,
+  `compute_log_prob` (surfaces hidden states for DRA-GRPO)
+* `ComposerActorRolloutRefWorker` — swaps in the composer actor at
+  `init_model` time
+* `ComposerRayPPOTrainer` — composer `fit` loop with FlowPlugins
+  (Info-GRPO, reference-reward), DAPO oversampling, Tracking/CSV fallback,
+  forced `balance_batch: false`
+
+The launcher
+[`ComposerTaskRunner`](grpo_composer/integrations/verl/entrypoint.py)
+registers the composer worker before `ray.remote(...)` wrapping and
+instantiates the composer trainer. `scripts/train_grpo.py` redirects
+`verl.trainer.main_ppo.run_ppo` to that entrypoint — the only launch-time
+seam.
+
+## Debugging
+
+Three independent env switches (or YAML equivalents — Ray actors don't
+inherit env vars, so prefer the YAML for cluster runs):
+
+| Env var | YAML | Effect |
+|---|---|---|
+| `GRPO_COMPOSER_DEBUG=1` | — | Verbose composer init + per-step shape prints |
+| `GRPO_COMPOSER_DAPO_DEBUG=1` | `algorithm.filter_groups.debug: true` | DAPO dynamic-sampling diagnostics |
+| `GRPO_COMPOSER_STRICT_VALIDATION=1` | — | Raise on shape / config drift instead of warning |
+
+`--debug` on the Modal/local launchers turns all three on.
+
+## Docs
+
+* [`docs/getting_started.md`](docs/getting_started.md) — install, first run, smoke test.
+* [`docs/repository_state_and_experiment_guide.md`](docs/repository_state_and_experiment_guide.md) — paper-by-paper status, what's verified, what's flagged.
+* [`examples/README.md`](examples/README.md) — mix-and-match cookbook recipes.
+
+## License
+
+See [LICENSE](LICENSE).
 # Unified GRPO Framework v4
 
 ## Overview

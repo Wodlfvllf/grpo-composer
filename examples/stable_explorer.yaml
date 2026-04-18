@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────────────────
+# Stable-Explorer  (mix: KRPO Kalman × trajectory clip × weighted-KL)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   For long training runs the failure mode isn't peak score but variance
+#   blow-up around step ~500. Three independent stabilisers, each on a
+#   different axis:
+#     - Kalman baseline   → smooths the *advantage signal*
+#     - trajectory clip   → smooths the *gradient magnitude* (1 ratio / seq)
+#     - weighted KL       → smooths the *policy update* (anchor where the
+#                           ratio is most off-policy)
+#
+# WHY IT MIGHT WIN
+#   Each axis attacks a different source of variance. Stacking three weak
+#   stabilisers usually beats one strong one because each addresses a
+#   different failure mode without over-constraining any single one.
+#
+#   Token-level clip + std-baseline + flat-KL (vanilla GRPO) is the worst
+#   of all three worlds for stability — this recipe is the inverse.
+#
+# RISK
+#   Triple-stabilisation can under-fit on easy data. If GSM8K accuracy
+#   plateaus below 60% in the first 200 steps, drop weighted_kl → kl with
+#   reg_coef=0.005, or switch trajectory clip back to symmetric.
+
+algorithm:
+  adv_estimator: kalman_grpo
+  kalman_Q: 1.0e-5
+  kalman_R: 1.0e-2
+
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 4
+
+composer:
+  clip_mode: trajectory
+  clip_ratio: 0.2
+  clip_ratio_high: 1.28
+  agg_mode: token_mean
+  regularizer: weighted_kl
+  reg_coef: 0.01
+
+  # weighted-trust knobs (shared by weighted_kl / weighted_token / weighted_trust)
+  tr_alpha: 2.0
+  tr_tau: 9.0
+  tr_mu: 0.25
+  tr_l: 1.0
+  tr_u: 1.4
+
+trainer:
+  balance_batch: false

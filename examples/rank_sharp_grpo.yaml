@@ -1,0 +1,61 @@
+# ──────────────────────────────────────────────────────
+# Rank-Sharp-GRPO  (mix: rank-enhanced reward × asymmetric clip × group-uniform)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   GSM8K reward is binary 0/1 → inside a group of n=4 samples you typically
+#   see (1,1,0,0) or (1,0,0,0). The std is huge but the *direction* of the
+#   advantage is identical for every correct sample. We're throwing away
+#   intra-group ordering information.
+#
+#   Rank-enhanced reward (RankCalculator with ranking_method=weight) replaces
+#   the raw 0/1 with a smooth function of within-group rank — denser, more
+#   informative, still group-relative.
+#
+#   Then:
+#     - group_uniform aggregation   → equal weight per group, removes the
+#                                     "many tokens from one chain dominate"
+#                                     bias
+#     - asymmetric clip [0.2, 0.28] → upside room for high-rank chains to
+#                                     grow their probability
+#
+# WHY IT MIGHT WIN
+#   The combo turns sparse binary GSM8K signal into a dense per-token
+#   gradient that respects within-group ordering. Should especially help
+#   in the early phase (steps 0–200) when most groups are split 1/3 or 2/2
+#   and vanilla GRPO has near-zero std → near-zero advantage.
+#
+# RISK
+#   rank_enhanced rewards are **only meaningful if rollout.n >= 4** — with
+#   n=2 every sample is rank 1 or 2 and the signal collapses. Keep n=4 or
+#   higher.
+
+algorithm:
+  adv_estimator: grpo
+
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 4
+
+composer:
+  clip_mode: asymmetric
+  clip_ratio: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  agg_mode: group_uniform
+  regularizer: kl
+  reg_coef: 0.01
+
+  ranking_type: heuristic
+  ranking_method: weight
+  ranking_tau: 0.1
+  rank_xi_minus: -0.5
+  rank_xi_plus: 0.5
+
+  composer_reward_pipeline:
+    - rank
+
+trainer:
+  balance_batch: false

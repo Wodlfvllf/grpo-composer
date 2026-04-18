@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────────────
+# Diverse-Explorer  (mix: unlikeliness reward × asymmetric clip × no KL)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   "Rewarding the Unlikely" showed GRPO collapses pass@N because the policy
+#   sharpens around already-likely solutions. The unlikeliness reward gives
+#   higher advantage to RARE correct responses inside each group.
+#
+#   We boost that effect two more ways:
+#     - asymmetric clip with high=0.30 — give the rare-correct ratios more
+#       upside before being capped
+#     - regularizer=none — remove the KL anchor that pulls the policy back
+#       toward the high-probability mode
+#
+# WHY IT MIGHT WIN
+#   On GSM8K the model usually has 1–2 dominant solution paths per problem.
+#   This combo specifically rewards minority-correct chains and lets their
+#   probability ratio grow further per update. Expected: same pass@1 as base
+#   GRPO, noticeably higher pass@4 / pass@8.
+#
+# RISK
+#   No KL anchor + larger upper clip = drift risk. Mitigation:
+#     - smaller composer.unlikeliness_beta=0.4 (paper used 0.5)
+#     - larger rollout.n=8 to keep group statistics stable
+#     - keep eval cadence tight to catch divergence early
+
+algorithm:
+  adv_estimator: grpo
+
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 8
+
+composer:
+  clip_mode: asymmetric
+  clip_ratio: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.30
+  agg_mode: token_mean
+  regularizer: none
+  reg_coef: 0.0
+  unlikeliness_beta: 0.4
+  composer_reward_pipeline:
+    - unlikeliness
+
+trainer:
+  balance_batch: false
