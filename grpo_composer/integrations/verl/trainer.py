@@ -20,9 +20,8 @@ import json
 import numpy as np
 import torch
 from .reward_ranker import BaseRanker, HeuristicRanker, RRMRanker, ensure_reward_ranks
-from .patch_dp_actor import _patch_dp_actor_update_policy, unpatch_dp_actor_update_policy, _patch_dp_actor_forward_microbatch_compute_log_prob
 from .rewards_registery import _REWARD_TRANSFORMS, _sequence_rewards_from_token
-from .patch_fsdp_workers import _patch_fsdp_compute_log_probs
+from .composer_workers import ComposerActorRolloutRefWorker
 import json
 import os
 import uuid
@@ -85,11 +84,6 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
                 "ComposerRayPPOTrainer requires `verl` to be installed. "
                 f"Original import error: {_VERL_IMPORT_ERROR!r}"
             )
-
-
-_ORIGINAL_COMPUTE_ADVANTAGE = None
-_ORIGINAL_RAY_TRAINER_CLASS = None
-_ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
 
 
 def _is_wandb_auth_error(exc: Exception) -> bool:
@@ -248,62 +242,14 @@ def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str)
     return _TrackingWithCsvFallback
 
 
-def _strict_validation_enabled() -> bool:
-    return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
-
-
-def _shape_debug(value: Any) -> str:
-    if isinstance(value, torch.Tensor):
-        return f"torch{tuple(value.shape)}"
-    if isinstance(value, np.ndarray):
-        return f"np{tuple(value.shape)}"
-    if isinstance(value, (list, tuple)):
-        return f"{type(value).__name__}(len={len(value)})"
-    return type(value).__name__
-
-
-def _cfg_get(config: Any, key: str, default=None):
-    from .loss_context import get_composer_config
-
-    val = None
-    if config is not None:
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                val = getter(key, None)
-            except TypeError:
-                pass
-        if val is None:
-            val = getattr(config, key, None)
-
-    if val is not None:
-        return val
-
-    # Fallback to globally injected composer config
-    composer_cfg = get_composer_config()
-    if key in composer_cfg and composer_cfg[key] is not None:
-        return composer_cfg[key]
-
-    return default
-
-
-def _cfg_get_nested(config: Any, path: tuple[str, ...], default=None):
-    current = config
-    for part in path:
-        if current is None:
-            return default
-        current = _cfg_get(current, part, None)
-    return default if current is None else current
-
-
-def _to_bool_flag(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(value)
+# Shared helpers (definitions live in .utils; aliased here for legacy call sites).
+from .utils import (  # noqa: E402
+    _cfg_get,
+    _cfg_get_nested,
+    _shape_debug,
+    _strict_validation_enabled,
+    _to_bool_flag,
+)
 
 
 def _dapo_debug_enabled(config: Any) -> bool:
@@ -682,19 +628,26 @@ class FlowRuntimeContext:
 
 
 class FlowPlugin(ABC):
-    """Minimal flow plugin protocol used by the trainer extension points."""
+    """Minimal flow plugin protocol used by the trainer extension points.
+
+    Three hooks cover every runtime extension we currently need:
+
+    * ``configure``: one-shot setup at trainer init (capture tokenizer,
+      validate prerequisites, etc.).
+    * ``before_generate``: mutate / replace the rollout batch immediately
+      before ``generate_sequences`` (e.g. Info-GRPO latent-seed injection).
+    * ``before_compute_advantage``: mutate the post-rollout DataProto before
+      advantages are computed (e.g. PVPO/GAPO reference-reward generation).
+    """
 
     def configure(self, trainer: "ComposerRayPPOTrainer") -> None:
         return None
 
-    def build_loss_context(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> dict[str, Any]:
-        return {}
-
-    def before_update_actor(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> Any:
+    def before_generate(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> Any:
         return batch
 
-    def after_update_actor(self, trainer: "ComposerRayPPOTrainer", batch: Any, output: Any) -> Any:
-        return output
+    def before_compute_advantage(self, trainer: "ComposerRayPPOTrainer", data: Any) -> Any:
+        return data
 
 
 class PassThroughFlowPlugin(FlowPlugin):
@@ -703,12 +656,18 @@ class PassThroughFlowPlugin(FlowPlugin):
 
 _FLOW_PLUGIN_REGISTRY: dict[str, type[FlowPlugin]] = {
     "default": PassThroughFlowPlugin,
-    "pvpo": PassThroughFlowPlugin,
-    "pvpo_grpo": PassThroughFlowPlugin,
-    "gapo": PassThroughFlowPlugin,
-    "gapo_grpo": PassThroughFlowPlugin,
-    "info_grpo": PassThroughFlowPlugin,
 }
+
+# Lazy registration of plugins that import from this module to avoid circular imports.
+def _register_builtin_flow_plugins() -> None:
+    from .flow_plugins import InfoGRPOFlowPlugin, ReferenceRewardFlowPlugin
+
+    _FLOW_PLUGIN_REGISTRY["info_grpo"] = InfoGRPOFlowPlugin
+    for name in ("pvpo", "pvpo_grpo", "gapo", "gapo_grpo"):
+        _FLOW_PLUGIN_REGISTRY[name] = ReferenceRewardFlowPlugin
+
+
+_register_builtin_flow_plugins()
 
 def _parse_flow_list(config: Any) -> list[str]:
     algorithm = _cfg_get(config, "algorithm", None)
@@ -746,12 +705,6 @@ def _parse_flow_list(config: Any) -> list[str]:
     return parsed_plugins
 
 
-
-# Ensure worker-side config binding when this module is imported via
-# actor_rollout_ref.model.external_lib in FSDP worker processes.
-_patch_dp_actor_update_policy()
-_patch_dp_actor_forward_microbatch_compute_log_prob()
-_patch_fsdp_compute_log_probs()
 
 class ComposerRayPPOTrainer(RayPPOTrainer):
     """Single custom trainer that extends VERL's RayPPOTrainer with flow plugins."""
@@ -906,21 +859,9 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
     def fit(self) -> None:
         """Override fit to guarantee compute_advantage patching within the execution loop."""
-        import verl.trainer.ppo.ray_trainer as ray_trainer_module
-        import verl.utils.tracking as tracking_module
-        import sys
-        from .info_grpo_hook import InfoGRPORolloutAugmentor
-        from .ref_reward_runtime import ensure_reference_rewards, has_reference_rewards
-
-        # Force intercepting the locally scoped compute_advantage inside ray_trainer
-        original_compute_advantage = getattr(ray_trainer_module, "compute_advantage", None)
-        original_compute_reward = getattr(ray_trainer_module, "compute_reward", None)
-        original_tracking = getattr(ray_trainer_module, "Tracking", None)
-        original_tracking_utils = getattr(tracking_module, "Tracking", None)
-        tracking_base_cls = original_tracking or original_tracking_utils
+        from verl.utils.tracking import Tracking as _UpstreamTracking
 
         composer_cfg = getattr(self, "composer_config_dict", {})
-        ref_reward_source = str(composer_cfg.get("reference_reward_source", "auto")).strip().lower()
         ranker = build_ranker(composer_cfg)
         default_local_dir = str(_cfg_get_nested(self.config, ("trainer", "default_local_dir"), "/checkpoints"))
         csv_path = str(Path(default_local_dir) / "metrics" / "training_metrics.csv")
@@ -930,62 +871,13 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             self._enforce_balance_batch_disabled()
             print(f"[grpo_composer] Step metrics CSV path: {csv_path}")
 
-            # Always persist scalar step metrics into CSV.
-            ray_trainer_module.Tracking = _build_tracking_with_csv_fallback(tracking_base_cls, csv_path)
-            if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = ray_trainer_module.Tracking
-            # Patch source Tracking class too, in case veRL resolves from utils module.
-            tracking_module.Tracking = ray_trainer_module.Tracking
-            if "verl.utils.tracking" in sys.modules:
-                sys.modules["verl.utils.tracking"].Tracking = ray_trainer_module.Tracking
-
-            if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
-                if self.async_rollout_mode:
-                    original_method = self.async_rollout_manager.generate_sequences
-                    self.async_rollout_manager.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
-                else:
-                    original_method = self.actor_rollout_wg.generate_sequences
-                    self.actor_rollout_wg.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
-            
-            # Hook reference rewards if PVPO or if the config requests it dynamically
-            flow_names = _parse_flow_list(self.config)
-            needs_reference_reward = any(
-                name in ["pvpo", "pvpo_grpo", "gapo", "gapo_grpo"] or "reference_rewards" in name 
-                for name in flow_names
-            )
-
-            def hooked_compute_advantage(data, adv_estimator, *args, **kwargs):
-                debug = os.environ.get("GRPO_COMPOSER_DEBUG") == "1"
-                if debug:
-                    print(f"[grpo_composer-debug] hooked_compute_advantage data={type(data)}")
-
-                if needs_reference_reward and not has_reference_rewards(data):
-                    ensure_reference_rewards(
-                        self,
-                        data,
-                        composer_cfg=composer_cfg,
-                        ref_reward_source=ref_reward_source,
-                        debug=debug,
-                    )
-
-                return composer_compute_advantage(
-                    data,
-                    adv_estimator,
-                    *args,
-                    ranker=ranker,
-                    tokenizer=self.tokenizer,
-                    **kwargs,
-                )
-
-            ray_trainer_module.compute_advantage = hooked_compute_advantage
-            if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = hooked_compute_advantage
-
+            # Always persist scalar step metrics into CSV. Instantiating directly
+            # avoids mutating verl module globals: we control the symbol name
+            # used below because we own fit().
             from omegaconf import OmegaConf
 
-            from verl.utils.tracking import Tracking
-
-            logger = Tracking(
+            TrackingCls = _build_tracking_with_csv_fallback(_UpstreamTracking, csv_path)
+            logger = TrackingCls(
                 project_name=self.config.trainer.project_name,
                 experiment_name=self.config.trainer.experiment_name,
                 default_backend=self.config.trainer.logger,
@@ -1076,6 +968,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
                         # generate a batch
                         with marked_timer("gen", timing_raw, color="red"):
+                            for plugin in self.composer_flow_plugins:
+                                gen_batch_output = plugin.before_generate(self, gen_batch_output)
                             if not self.async_rollout_mode:
                                 gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                             else:
@@ -1091,6 +985,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                             with marked_timer("gen_max", timing_raw, color="purple"):
                                 gen_baseline_batch = deepcopy(gen_batch)
                                 gen_baseline_batch.meta_info["do_sample"] = False
+                                for plugin in self.composer_flow_plugins:
+                                    gen_baseline_batch = plugin.before_generate(self, gen_baseline_batch)
                                 if not self.async_rollout_mode:
                                     gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
                                 else:
@@ -1349,7 +1245,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                                 )
 
 
-                            batch = hooked_compute_advantage(
+                            for plugin in self.composer_flow_plugins:
+                                batch = plugin.before_compute_advantage(self, batch)
+
+                            batch = composer_compute_advantage(
                                 batch,
                                 adv_estimator=self.config.algorithm.adv_estimator,
                                 gamma=self.config.algorithm.gamma,
@@ -1357,6 +1256,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                                 num_repeat=self.config.actor_rollout_ref.rollout.n,
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 config=self.config.algorithm,
+                                ranker=ranker,
+                                tokenizer=self.tokenizer,
                             )
 
                         # update critic
@@ -1484,20 +1385,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     num_gen_batches = 0
 
         finally:
-            if original_compute_advantage is not None:
-                ray_trainer_module.compute_advantage = original_compute_advantage
-                if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                    sys.modules["verl.trainer.ppo.ray_trainer"].compute_advantage = original_compute_advantage
-            if original_compute_reward is not None:
-                ray_trainer_module.compute_reward = original_compute_reward
-            if original_tracking is not None:
-                ray_trainer_module.Tracking = original_tracking
-                if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                    sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = original_tracking
-            if original_tracking_utils is not None:
-                tracking_module.Tracking = original_tracking_utils
-                if "verl.utils.tracking" in sys.modules:
-                    sys.modules["verl.utils.tracking"].Tracking = original_tracking_utils
+            # No module globals to restore: we instantiate Tracking directly
+            # via _build_tracking_with_csv_fallback above instead of swapping
+            # verl.trainer.ppo.ray_trainer.Tracking / verl.utils.tracking.Tracking.
+            pass
 
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)
@@ -1567,84 +1458,9 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     f"success={injected}, meta_info_type={type(current_meta)}, meta_info_keys={keys}"
                 )
 
-        for plugin in self.composer_flow_plugins:
-            for key, value in plugin.build_loss_context(self, batch).items():
-                if isinstance(value, torch.Tensor):
-                    _set_batch_tensor(batch, key, value)
-                else:
-                    _set_non_tensor(batch, key, value)
         return batch
 
     def _update_actor(self, batch):  # type: ignore[override]
-        for plugin in self.composer_flow_plugins:
-            batch = plugin.before_update_actor(self, batch)
-
         batch = self._inject_loss_context(batch)
         self._validate_actor_batch_contract(batch)
-        output = super()._update_actor(batch)
-
-        for plugin in self.composer_flow_plugins:
-            output = plugin.after_update_actor(self, batch, output)
-        return output
-
-
-def patch_verl_main_ppo() -> None:
-    """Patch VERL main PPO wiring to use ComposerRayPPOTrainer and compute_advantage."""
-
-    if ray_trainer_module is None:
-        raise RuntimeError(
-            "patch_verl_main_ppo requires `verl` to be installed. "
-            f"Original import error: {_VERL_IMPORT_ERROR!r}"
-        )
-
-    global _ORIGINAL_COMPUTE_ADVANTAGE
-    global _ORIGINAL_RAY_TRAINER_CLASS
-    global _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-
-    if _ORIGINAL_COMPUTE_ADVANTAGE is None:
-        _ORIGINAL_COMPUTE_ADVANTAGE = ray_trainer_module.compute_advantage
-        ray_trainer_module.compute_advantage = composer_compute_advantage
-
-    if _ORIGINAL_RAY_TRAINER_CLASS is None:
-        _ORIGINAL_RAY_TRAINER_CLASS = ray_trainer_module.RayPPOTrainer
-        ray_trainer_module.RayPPOTrainer = ComposerRayPPOTrainer
-
-    import verl.trainer.main_ppo as main_ppo
-
-    if _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS is None:
-        _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = main_ppo.RayPPOTrainer
-        main_ppo.RayPPOTrainer = ComposerRayPPOTrainer
-
-    _patch_dp_actor_update_policy()
-    _patch_dp_actor_forward_microbatch_compute_log_prob()
-    _patch_fsdp_compute_log_probs()
-
-
-def unpatch_verl_main_ppo() -> None:
-    """Restore VERL's original trainer wiring if it was patched."""
-
-    if ray_trainer_module is None:
-        return
-
-    global _ORIGINAL_COMPUTE_ADVANTAGE
-    global _ORIGINAL_RAY_TRAINER_CLASS
-    global _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-
-    if _ORIGINAL_COMPUTE_ADVANTAGE is not None:
-        ray_trainer_module.compute_advantage = _ORIGINAL_COMPUTE_ADVANTAGE
-        _ORIGINAL_COMPUTE_ADVANTAGE = None
-
-    if _ORIGINAL_RAY_TRAINER_CLASS is not None:
-        ray_trainer_module.RayPPOTrainer = _ORIGINAL_RAY_TRAINER_CLASS
-        _ORIGINAL_RAY_TRAINER_CLASS = None
-
-    try:
-        import verl.trainer.main_ppo as main_ppo
-
-        if _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS is not None:
-            main_ppo.RayPPOTrainer = _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-            _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
-    except Exception:
-        pass
-
-    unpatch_dp_actor_update_policy()
+        return super()._update_actor(batch)

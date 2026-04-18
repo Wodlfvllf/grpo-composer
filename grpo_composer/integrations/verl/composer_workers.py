@@ -1,4 +1,20 @@
-"""Worker-side patching for veRL FSDP actor `compute_log_prob`."""
+"""Composer subclass of veRL's :class:`ActorRolloutRefWorker`.
+
+This module defines :class:`ComposerActorRolloutRefWorker`, which extends the
+upstream worker in two ways:
+
+1. After the base ``init_model`` builds the FSDP actor (and optional reference)
+   modules, the standard ``DataParallelPPOActor`` instances are replaced with
+   :class:`ComposerDataParallelPPOActor` so that custom flow-aware logic
+   (loss composition, hidden-state surfacing, info-NCE) is used.
+2. ``compute_log_prob`` is overridden so the worker forwards the hidden states
+   produced by the actor's ``compute_log_prob`` into the returned ``DataProto``
+   under both ``hidden_states`` and ``response_hidden_states`` keys, which the
+   composer flows (DRA-GRPO, etc.) require.
+
+Step 7 only *defines* the subclass; it is wired into ``ComposerRayPPOTrainer``
+via :class:`ComposerTaskRunner` (see ``entrypoint.py``).
+"""
 
 from __future__ import annotations
 
@@ -10,44 +26,69 @@ from typing import Optional
 _VERL_IMPORT_ERROR: Optional[Exception] = None
 try:
     from verl import DataProto
-    from verl.single_controller.base.decorator import make_nd_compute_dataproto_dispatch_fn, register
+    from verl.single_controller.base.decorator import (
+        Dispatch,
+        make_nd_compute_dataproto_dispatch_fn,
+        register,
+    )
+    from verl.utils.config import omega_conf_to_dataclass
     from verl.utils.fsdp_utils import fsdp_version, load_fsdp_model_to_gpu, offload_fsdp_model_to_cpu
     from verl.utils.profiler import DistProfiler, log_gpu_memory_usage
     from verl.workers.fsdp_workers import ActorRolloutRefWorker
 except Exception as exc:  # pragma: no cover - exercised when verl is absent
     _VERL_IMPORT_ERROR = exc
     DataProto = None
-    ActorRolloutRefWorker = None
-    register = None
+    Dispatch = None
     make_nd_compute_dataproto_dispatch_fn = None
-    DistProfiler = None
+    register = None
+    omega_conf_to_dataclass = None
     fsdp_version = None
     load_fsdp_model_to_gpu = None
     offload_fsdp_model_to_cpu = None
+    DistProfiler = None
     log_gpu_memory_usage = None
+    ActorRolloutRefWorker = object  # type: ignore[assignment]
 
+from .composer_dp_actor import ComposerDataParallelPPOActor
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-_ORIGINAL_FSDP_COMPUTE_LOG_PROB = None
 
+class ComposerActorRolloutRefWorker(ActorRolloutRefWorker):
+    """veRL ``ActorRolloutRefWorker`` that uses ``ComposerDataParallelPPOActor``.
 
-def _patch_fsdp_compute_log_probs() -> None:
-    """Patch FSDP worker to return hidden states alongside old log-probs."""
+    The class is intentionally thin: it lets the upstream ``init_model`` do all
+    of the heavy FSDP / rollout / checkpoint plumbing, then swaps the actor (and
+    optional reference) policy objects to the composer subclass. Both replacements
+    re-use the FSDP-wrapped modules and optimizer instances created by the
+    parent, so the checkpoint manager bound earlier in ``init_model`` continues
+    to reference the same parameters.
+    """
 
-    global _ORIGINAL_FSDP_COMPUTE_LOG_PROB
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self):  # type: ignore[override]
+        super().init_model()
 
-    if ActorRolloutRefWorker is None or DataProto is None or register is None:
-        return
-    if _ORIGINAL_FSDP_COMPUTE_LOG_PROB is not None:
-        return
+        if self._is_actor:
+            actor_cfg = omega_conf_to_dataclass(self.config.actor)
+            self.actor = ComposerDataParallelPPOActor(
+                config=actor_cfg,
+                actor_module=self.actor_module_fsdp,
+                actor_optimizer=self.actor_optimizer,
+            )
 
-    _ORIGINAL_FSDP_COMPUTE_LOG_PROB = ActorRolloutRefWorker.compute_log_prob
+        # Standalone reference policy (only created when not using LoRA-shared ref).
+        if self._is_ref and not self._is_lora and getattr(self, "ref_module_fsdp", None) is not None:
+            self.ref_policy = ComposerDataParallelPPOActor(
+                config=self.config.ref,
+                actor_module=self.ref_module_fsdp,
+            )
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
-    def _patched_compute_log_prob(self, data: DataProto):
+    def compute_log_prob(self, data):  # type: ignore[override]
+        """Recompute log-probs and surface hidden states for composer flows."""
         assert self._is_actor
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
@@ -92,9 +133,9 @@ def _patch_fsdp_compute_log_probs() -> None:
             tensors = {
                 "old_log_probs": old_log_probs,
                 "entropys": entropys,
+                "hidden_states": hidden_states,
+                "response_hidden_states": hidden_states,
             }
-            tensors["hidden_states"] = hidden_states
-            tensors["response_hidden_states"] = hidden_states
 
             output = DataProto.from_dict(
                 tensors=tensors,
@@ -114,4 +155,5 @@ def _patch_fsdp_compute_log_probs() -> None:
 
         return output
 
-    ActorRolloutRefWorker.compute_log_prob = _patched_compute_log_prob
+
+__all__ = ["ComposerActorRolloutRefWorker"]

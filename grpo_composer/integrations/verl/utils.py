@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 import numpy as np
@@ -12,6 +13,106 @@ from .loss_context import (
     config_get as _config_get,
     config_get_context as _config_get_context,
 )
+
+
+# ---------------------------------------------------------------------------
+# Config / debug helpers (consolidated from trainer.py, composer_dp_actor.py,
+# and rewards_registery.py).
+# ---------------------------------------------------------------------------
+
+
+def strict_validation_enabled() -> bool:
+    return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
+
+
+def shape_debug(value: Any) -> str:
+    if isinstance(value, torch.Tensor):
+        return f"torch{tuple(value.shape)}"
+    if isinstance(value, np.ndarray):
+        return f"np{tuple(value.shape)}"
+    if isinstance(value, (list, tuple)):
+        return f"{type(value).__name__}(len={len(value)})"
+    return type(value).__name__
+
+
+def cfg_get(config: Any, key: str, default=None):
+    """Look up ``key`` on ``config`` with fallback to global composer config."""
+    from .loss_context import get_composer_config
+
+    val = None
+    if config is not None:
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            try:
+                val = getter(key, None)
+            except TypeError:
+                pass
+        if val is None:
+            val = getattr(config, key, None)
+
+    if val is not None:
+        return val
+
+    composer_cfg = get_composer_config()
+    if key in composer_cfg and composer_cfg[key] is not None:
+        return composer_cfg[key]
+
+    return default
+
+
+def cfg_get_nested(config: Any, path: tuple[str, ...], default=None):
+    current = config
+    for part in path:
+        if current is None:
+            return default
+        current = cfg_get(current, part, None)
+    return default if current is None else current
+
+
+def to_bool_flag(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def extract_rollout_n(meta_info: Any) -> Optional[int]:
+    value = None
+    if isinstance(meta_info, dict):
+        value = meta_info.get("rollout_n", None)
+        if value is None:
+            value = meta_info.get("n", None)
+    else:
+        getter = getattr(meta_info, "get", None)
+        if callable(getter):
+            try:
+                value = getter("rollout_n", None)
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    value = getter("n", None)
+                except Exception:
+                    value = None
+
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+# Underscore aliases for legacy call sites.
+_strict_validation_enabled = strict_validation_enabled
+_shape_debug = shape_debug
+_cfg_get = cfg_get
+_cfg_get_nested = cfg_get_nested
+_to_bool_flag = to_bool_flag
+_extract_rollout_n = extract_rollout_n
 
 
 def _validate_tensor_shape(
@@ -141,13 +242,25 @@ compute_tr_token_weights = _compute_tr_token_weights
 
 __all__ = [
     "_as_tensor",
+    "_cfg_get",
+    "_cfg_get_nested",
     "_compute_tr_token_weights",
+    "_extract_rollout_n",
     "_infer_sequence_rewards",
     "_resolve_tr_weight_bounds",
+    "_shape_debug",
+    "_strict_validation_enabled",
+    "_to_bool_flag",
     "_validate_tensor_shape",
     "as_tensor",
+    "cfg_get",
+    "cfg_get_nested",
     "compute_tr_token_weights",
+    "extract_rollout_n",
     "infer_sequence_rewards",
     "resolve_tr_weight_bounds",
+    "shape_debug",
+    "strict_validation_enabled",
+    "to_bool_flag",
     "validate_tensor_shape",
 ]

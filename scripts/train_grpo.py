@@ -4,7 +4,10 @@ train_grpo.py — veRL GRPO training with grpo_composer components
 This is the entry point that:
 1. Imports grpo_composer.integrations.verl (triggers registration of all
    custom advantage estimators + the "composer" loss into veRL's registries)
-2. Launches veRL's GRPO training loop with the specified config
+2. Launches veRL's GRPO training loop with the specified config via the
+   composer entrypoint, which substitutes ComposerTaskRunner +
+   ComposerRayPPOTrainer + ComposerActorRolloutRefWorker into the launch
+   path. No global monkey-patching of verl modules is performed.
 
 Usage:
     # Single GPU (for debugging):
@@ -36,31 +39,14 @@ if str(REPO_ROOT) not in sys.path:
 # decorators, making our custom components available to veRL.
 
 import grpo_composer.integrations.verl  # noqa: F401  — side-effect import
-from grpo_composer.integrations.verl import patch_verl_main_ppo
 from grpo_composer.integrations.verl import (  # noqa: F401
     aggregations_registery,
     clip_registery,
-    patch_dp_actor,
     regularisation_registery,
     rewards_registery,
     utils,
 )
-
-
-# ────────────────────────────────────────────────────
-# Step 2: Custom TaskRunner that re-patches inside
-#         the Ray actor process (Process 3)
-# ────────────────────────────────────────────────────
-# Ray spawns TaskRunner as a separate process. Monkey-patches
-# from the main process (Process 2) don't carry over. This
-# subclass re-applies them so ComposerRayPPOTrainer and custom
-# advantage estimators are available inside the Ray actor.
-
-patch_verl_main_ppo()
-
-import ray
-import verl.trainer.main_ppo as _main_ppo
-from verl.trainer.main_ppo import TaskRunner
+from grpo_composer.integrations.verl.entrypoint import run as composer_run
 
 
 def _cfg_get(obj: Any, key: str, default: Any = None) -> Any:
@@ -172,38 +158,25 @@ def _inject_composer_env_into_ray_runtime(config: Any) -> None:
         )
 
 
-class ComposerTaskRunner(TaskRunner):
-    """TaskRunner that ensures grpo_composer patches are applied in this process."""
+# ────────────────────────────────────────────────────
+# Step 2: Hydra entrypoint via veRL's main()
+# ────────────────────────────────────────────────────
+# veRL's `main()` Hydra-loads the config and calls `run_ppo(config)`. We
+# redirect `run_ppo` to our composer entrypoint so ComposerTaskRunner is the
+# Ray actor class. This is a single launch-time seam, not a class table
+# monkey-patch — all behavioral overrides live on the composer subclasses.
 
-    def run(self, config):
-        # Re-apply patches inside the Ray actor process
-        import grpo_composer.integrations.verl  # noqa: F401
-        from grpo_composer.integrations.verl import patch_verl_main_ppo
-        patch_verl_main_ppo()
-        if os.environ.get("GRPO_COMPOSER_DEBUG") == "1":
-            print(
-                "[composer-debug] TaskRunner env check: "
-                f"WANDB_API_KEY={'present' if bool(os.environ.get('WANDB_API_KEY')) else 'missing'} "
-                f"WANDB_ENTITY={'present' if bool(os.environ.get('WANDB_ENTITY')) else 'missing'} "
-                f"WANDB_PROJECT={'present' if bool(os.environ.get('WANDB_PROJECT')) else 'missing'}"
-            )
-        return super().run(config)
+import verl.trainer.main_ppo as _main_ppo  # noqa: E402
 
 
-# Monkey-patch run_ppo so veRL's main() uses our ComposerTaskRunner
-_original_run_ppo = _main_ppo.run_ppo
-
-
-def _composer_run_ppo(config, task_runner_class=None):
+def _composer_run_ppo(config, task_runner_class=None):  # noqa: ARG001
     _inject_composer_env_into_ray_runtime(config)
-    if task_runner_class is None:
-        task_runner_class = ray.remote(num_cpus=1)(ComposerTaskRunner)
-    return _original_run_ppo(config, task_runner_class=task_runner_class)
+    composer_run(config)
 
 
 _main_ppo.run_ppo = _composer_run_ppo
 
-from verl.trainer.main_ppo import main
+from verl.trainer.main_ppo import main  # noqa: E402
 
 
 if __name__ == "__main__":
@@ -215,7 +188,7 @@ if __name__ == "__main__":
     print("               decoupled, multi_scale, static_value, novelty_sharp,")
     print("               unbiased_grpo")
     print("  Loss:        composer (clip_mode × agg_mode × regularizer)")
-    print("  Trainer:     ComposerRayPPOTrainer (patched over RayPPOTrainer)")
+    print("  Trainer:     ComposerRayPPOTrainer (via ComposerTaskRunner)")
     print()
     print("=" * 60)
 
