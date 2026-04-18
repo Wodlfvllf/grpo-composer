@@ -919,13 +919,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
     def fit(self) -> None:
         """Override fit to guarantee compute_advantage patching within the execution loop."""
-        import verl.trainer.ppo.ray_trainer as ray_trainer_module
-        import verl.utils.tracking as tracking_module
-        import sys
-
-        original_tracking = getattr(ray_trainer_module, "Tracking", None)
-        original_tracking_utils = getattr(tracking_module, "Tracking", None)
-        tracking_base_cls = original_tracking or original_tracking_utils
+        from verl.utils.tracking import Tracking as _UpstreamTracking
 
         composer_cfg = getattr(self, "composer_config_dict", {})
         ranker = build_ranker(composer_cfg)
@@ -937,20 +931,13 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             self._enforce_balance_batch_disabled()
             print(f"[grpo_composer] Step metrics CSV path: {csv_path}")
 
-            # Always persist scalar step metrics into CSV.
-            ray_trainer_module.Tracking = _build_tracking_with_csv_fallback(tracking_base_cls, csv_path)
-            if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = ray_trainer_module.Tracking
-            # Patch source Tracking class too, in case veRL resolves from utils module.
-            tracking_module.Tracking = ray_trainer_module.Tracking
-            if "verl.utils.tracking" in sys.modules:
-                sys.modules["verl.utils.tracking"].Tracking = ray_trainer_module.Tracking
-
+            # Always persist scalar step metrics into CSV. Instantiating directly
+            # avoids mutating verl module globals: we control the symbol name
+            # used below because we own fit().
             from omegaconf import OmegaConf
 
-            from verl.utils.tracking import Tracking
-
-            logger = Tracking(
+            TrackingCls = _build_tracking_with_csv_fallback(_UpstreamTracking, csv_path)
+            logger = TrackingCls(
                 project_name=self.config.trainer.project_name,
                 experiment_name=self.config.trainer.experiment_name,
                 default_backend=self.config.trainer.logger,
@@ -1458,14 +1445,10 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     num_gen_batches = 0
 
         finally:
-            if original_tracking is not None:
-                ray_trainer_module.Tracking = original_tracking
-                if "verl.trainer.ppo.ray_trainer" in sys.modules:
-                    sys.modules["verl.trainer.ppo.ray_trainer"].Tracking = original_tracking
-            if original_tracking_utils is not None:
-                tracking_module.Tracking = original_tracking_utils
-                if "verl.utils.tracking" in sys.modules:
-                    sys.modules["verl.utils.tracking"].Tracking = original_tracking_utils
+            # No module globals to restore: we instantiate Tracking directly
+            # via _build_tracking_with_csv_fallback above instead of swapping
+            # verl.trainer.ppo.ray_trainer.Tracking / verl.utils.tracking.Tracking.
+            pass
 
     def _inject_loss_context(self, batch: Any) -> Any:
         _inject_standard_composer_context(batch)
