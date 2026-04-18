@@ -43,24 +43,43 @@ non-default `algorithm.adv_estimator`.
 
 | Dataset | Reward shape | Wired in this repo | Needs custom advantage? | Needs custom reward pipeline? | Needs reference rewards? | Needs trained RM? | Needs strata ids? |
 |---|---|---|---|---|---|---|---|
-| **GSM8K** | binary 0/1 (string match) | ✅ `gsm8k.yaml` | no | no | no | no | no |
-| **MATH / MATH-Hard** | binary 0/1 (boxed compare) | ✅ `math.yaml` | no | no | no | no | no |
-| **DAPO-Math-17K** | binary 0/1 (boxed compare) | ✅ `dapo_math_17k.yaml` | no | optional `length_dependent` | no | no | no |
-| **AIME 2024** | binary 0/1 (integer match) | ✅ `aime.yaml` | no | no | no | no | no |
-| **AMC** | binary 0/1 (boxed) | ✅ `amc.yaml` | no | no | no | no | no |
-| **GPQA** | binary 0/1 (multiple choice letter) | ✅ `gpqa.yaml` | no | no | no | no | no |
-| **HumanEval** | binary 0/1 (test-pass) | ✅ `humaneval.yaml` ⚠️ | no | no | no | needs `prime` reward manager | no |
-| **MBPP (sanitized)** | binary 0/1 (test-pass) | ✅ `mbpp.yaml` ⚠️ | no | no | no | needs `prime` reward manager | no |
-| **CodeContests** | binary 0/1 (stdin/stdout, slow) | ✅ `code_contests.yaml` ⚠️ | no | no | no | needs `prime` reward manager | no |
-| **LiveCodeBench** | binary 0/1 (hidden tests) | ✅ `livecodebench.yaml` ⚠️ | no | no | no | needs `prime` reward manager | no |
+| **GSM8K** | binary 0/1 (string match) | ✅ `gsm8k.yaml` (veRL `gsm8k` scorer) | no | no | no | no | no |
+| **MATH / MATH-Hard** | binary 0/1 (boxed compare) | ✅ `math.yaml` (veRL `math_reward` scorer) | no | no | no | no | no |
+| **DAPO-Math-17K** | binary 0/1 (boxed compare) | ✅ `dapo_math_17k.yaml` (veRL `math_dapo` scorer) | no | optional `length_dependent` | no | no | no |
+| **AIME 2024** | binary 0/1 (integer match) | ✅ `aime.yaml` (veRL `math_dapo` scorer via `aime*` prefix) | no | no | no | no | no |
+| **AMC** | binary 0/1 (boxed) | ✅ `amc.yaml` (veRL `prime_math` via `numina_amc_aime`) | no | no | no | no | no |
+| **GPQA** | binary 0/1 (multiple choice letter) | ⚠️ `gpqa.yaml` — **no veRL scorer**, needs custom `compute_score` | no | no | no | no | no |
+| **HumanEval** | binary 0/1 (test-pass) | ⚠️ `humaneval.yaml` — **no veRL scorer**, needs custom or `apps`-style preprocess | no | no | no | no | no |
+| **MBPP (sanitized)** | binary 0/1 (test-pass) | ⚠️ `mbpp.yaml` — **no veRL scorer**, needs custom | no | no | no | no | no |
+| **CodeContests** | binary 0/1 (stdin/stdout, slow) | ✅ `code_contests.yaml` (veRL `prime_code` / `sandbox_fusion`) | no | no | no | no | no |
+| **LiveCodeBench** | binary 0/1 (hidden tests) | ⚠️ `livecodebench.yaml` — **no veRL scorer**, needs custom | no | no | no | no | no |
 | **TLDR / OpenAI summarisation** | scalar from RM | ❌ needs trained RM | no | no | no | **yes** | no |
 | **HH-RLHF / preference data** | pairwise (chosen/rejected) | ❌ needs RM training first | no | no | no | **yes** | no |
-| **Multi-turn search-R1 / RAG** | trajectory-level | ❌ needs async rollout patch | maybe `stratified_grpo` | no | no | no | **yes** (turn count) |
+| **Multi-turn search-R1 / RAG** | trajectory-level | ⚠️ veRL has `search_r1_like_qa_em` for nq/triviaqa/popqa/hotpotqa/2wikimultihopqa/musique/bamboogle, but our prepare_dataset doesn't ship them | maybe `stratified_grpo` | no | no | no | **yes** (turn count) |
 | **GSM8K + MATH mixture** | per-source binary | ✅ feed both parquets | no | optional `multi_reward` | no | no | optional |
 
-⚠️ = the dataset is wired in `prepare_dataset.py`, but evaluation requires a
-**code-execution reward manager** (`prime` is the veRL default). Without one,
-all rollouts score 0 and group methods will produce zero-variance advantages.
+⚠️ = preprocess writes parquets fine, but veRL 0.6.1's
+[`default_compute_score`](https://github.com/volcengine/verl/blob/v0.6.1/verl/utils/reward_score/__init__.py)
+will raise `NotImplementedError` on the `data_source` string. Two ways to
+fix per dataset:
+
+1. Map to a veRL-supported `data_source` (e.g. for AIME we use `aime_2024`
+   which matches the `aime*` prefix → `math_dapo` scorer).
+2. Provide a custom scorer via `reward_model.custom_reward_function` in
+   your YAML, or register one under `verl.utils.reward_score.<name>` and
+   change the dispatch.
+
+veRL 0.6.1 ships scorers for these `data_source` strings out of the box:
+
+| Scorer | Accepted `data_source` |
+|---|---|
+| `gsm8k` | `openai/gsm8k` |
+| `math_reward` | `lighteval/MATH`, `DigitalLearningGmbH/MATH-lighteval`, `HuggingFaceH4/MATH-500` |
+| `math_dapo` | `math_dapo`, `math`, `math_dapo_reasoning`, anything starting with `aime` |
+| `prime_math` | `numina_aops_forum`, `numina_synthetic_math`, `numina_amc_aime`, `numina_synthetic_amc`, `numina_cn_k12`, `numina_olympiads` |
+| `prime_code` / `sandbox_fusion` | `codecontests`, `apps`, `codeforces`, `taco` |
+| `geo3k` | `hiyouga/geometry3k` |
+| `search_r1_like_qa_em` | `searchR1_nq`, `searchR1_triviaqa`, `searchR1_popqa`, `searchR1_hotpotqa`, `searchR1_2wikimultihopqa`, `searchR1_musique`, `searchR1_bamboogle` |
 
 ## Which composer recipes assume what
 
