@@ -137,7 +137,7 @@ def _prepare_dapo_math_17k_dataset(output_dir: Path) -> tuple[str, str]:
                 except ValueError:
                     pass
             return {
-                "data_source": "BytedTsinghua-SIA/DAPO-Math-17k",
+                "data_source": "math_dapo",
                 "prompt": [{"role": "user", "content": f"{prompt_text} {instruction}"}],
                 "ability": "math",
                 "reward_model": {"style": "rule", "ground_truth": str(answer)},
@@ -164,7 +164,7 @@ def _prepare_aime_dataset(output_dir: Path) -> tuple[str, str]:
 
     def process_fn(example, idx):
         return {
-            "data_source": "Maxwell-Jia/AIME_2024",
+            "data_source": "aime_2024",
             "prompt": [{"role": "user", "content": f"{example['Problem']} {instruction}"}],
             "ability": "math",
             "reward_model": {"style": "rule", "ground_truth": str(example["Answer"])},
@@ -191,7 +191,7 @@ def _prepare_amc_dataset(output_dir: Path) -> tuple[str, str]:
 
     def process_fn(example, idx):
         return {
-            "data_source": "AI-MO/aimo-validation-amc",
+            "data_source": "numina_amc_aime",
             "prompt": [{"role": "user", "content": f"{example['problem']} {instruction}"}],
             "ability": "math",
             "reward_model": {"style": "rule", "ground_truth": str(example["answer"])},
@@ -342,7 +342,7 @@ def _prepare_code_contests_dataset(output_dir: Path) -> tuple[str, str]:
                 "generated_tests": example.get("generated_tests", {}),
             })
             return {
-                "data_source": "deepmind/code_contests",
+                "data_source": "codecontests",
                 "prompt": [{"role": "user", "content": f"{example['description']}\n\n{instruction}"}],
                 "ability": "code",
                 "reward_model": {"style": "code_io", "ground_truth": gt},

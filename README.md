@@ -135,24 +135,25 @@ Ten datasets are wired in [`scripts/prepare_dataset.py`](scripts/prepare_dataset
 with matching overlays in [`configs/data/`](configs/data). Pick one with
 `--dataset-preset <name>` or include the overlay in your recipe.
 
-| Preset | Source | Reward style | Status |
-|---|---|---|---|
-| `gsm8k` | `openai/gsm8k` | rule-based exact match | ✅ runnable |
-| `math` | `lighteval/MATH-Hard` | rule-based `\boxed{}` compare | ✅ runnable |
-| `dapo_math_17k` | `BytedTsinghua-SIA/DAPO-Math-17k` | rule-based | ✅ runnable |
-| `aime` | `Maxwell-Jia/AIME_2024` | rule-based integer match | ✅ runnable |
-| `amc` | `AI-MO/aimo-validation-amc` | rule-based | ✅ runnable |
-| `gpqa` | `Idavidrein/gpqa` | rule-based MCQ letter | ✅ runnable |
-| `humaneval` | `openai_humaneval` | code execution (unit tests) | ⚠️ needs `prime` reward manager |
-| `mbpp` | `mbpp/sanitized` | code execution | ⚠️ needs `prime` reward manager |
-| `code_contests` | `deepmind/code_contests` | code execution (stdin/stdout, slow) | ⚠️ needs `prime` reward manager |
-| `livecodebench` | `livecodebench/code_generation_lite` | code execution (hidden tests) | ⚠️ needs `prime` reward manager |
+| Preset | Source | `data_source` | veRL scorer | Status |
+|---|---|---|---|---|
+| `gsm8k` | `openai/gsm8k` | `openai/gsm8k` | `gsm8k` | ✅ runnable |
+| `math` | `lighteval/MATH-Hard` | `lighteval/MATH` | `math_reward` | ✅ runnable |
+| `dapo_math_17k` | `BytedTsinghua-SIA/DAPO-Math-17k` | `math_dapo` | `math_dapo` | ✅ runnable |
+| `aime` | `Maxwell-Jia/AIME_2024` | `aime_2024` | `math_dapo` (via `aime*` prefix) | ✅ runnable |
+| `amc` | `AI-MO/aimo-validation-amc` | `numina_amc_aime` | `prime_math` | ✅ runnable |
+| `code_contests` | `deepmind/code_contests` | `codecontests` | `prime_code` / `sandbox_fusion` | ✅ runnable (needs sandbox URL or `prime_code`) |
+| `gpqa` | `Idavidrein/gpqa` | `Idavidrein/gpqa` | none | ⚠️ needs custom scorer |
+| `humaneval` | `openai_humaneval` | `openai_humaneval` | none | ⚠️ needs custom scorer |
+| `mbpp` | `mbpp/sanitized` | `mbpp` | none | ⚠️ needs custom scorer |
+| `livecodebench` | `livecodebench/code_generation_lite` | `livecodebench/code_generation_lite` | none | ⚠️ needs custom scorer |
 
-⚠️ = preprocess is wired and ground truth is JSON-encoded test cases, but
-veRL's `prime` (or your own) code-execution reward manager must be available
-or all rollouts score 0. See [`configs/data/README.md`](configs/data/README.md)
-for the full compatibility matrix (which composer recipes need which
-dataset shape).
+⚠️ = preprocess writes parquets, but veRL 0.6.1's
+[`default_compute_score`](https://github.com/volcengine/verl/blob/v0.6.1/verl/utils/reward_score/__init__.py)
+will raise on the `data_source`. Either map to a supported scorer or wire
+`reward_model.custom_reward_function` in your YAML. See
+[`configs/data/README.md`](configs/data/README.md) for the full scorer
+registry and the per-recipe compatibility matrix.
 
 Switch dataset three equivalent ways:
 
