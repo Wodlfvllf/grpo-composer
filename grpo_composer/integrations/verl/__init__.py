@@ -20,7 +20,8 @@ from . import clip_registery
 from . import aggregations_registery
 from . import regularisation_registery
 from . import rewards_registery
-from .trainer import ComposerRayPPOTrainer, patch_verl_main_ppo, unpatch_verl_main_ppo
+from .trainer import ComposerRayPPOTrainer
+from .entrypoint import ComposerTaskRunner, run
 
 __all__ = [
     "advantages",
@@ -31,6 +32,6 @@ __all__ = [
     "regularisation_registery",
     "rewards_registery",
     "ComposerRayPPOTrainer",
-    "patch_verl_main_ppo",
-    "unpatch_verl_main_ppo",
+    "ComposerTaskRunner",
+    "run",
 ]

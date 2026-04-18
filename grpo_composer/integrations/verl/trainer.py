@@ -86,11 +86,6 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
             )
 
 
-_ORIGINAL_COMPUTE_ADVANTAGE = None
-_ORIGINAL_RAY_TRAINER_CLASS = None
-_ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
-
-
 def _is_wandb_auth_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     exc_name = type(exc).__name__.lower()
@@ -763,35 +758,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
     """Single custom trainer that extends VERL's RayPPOTrainer with flow plugins."""
 
     def __init__(self, *args, **kwargs):
-        # Replace upstream ActorRolloutRefWorker in role_worker_mapping with our
-        # ComposerActorRolloutRefWorker subclass so the FSDP workers instantiate
-        # ComposerDataParallelPPOActor and surface hidden states via
-        # compute_log_prob. role_worker_mapping is the third positional arg or
-        # passed via kwargs (see verl.trainer.ppo.ray_trainer.RayPPOTrainer).
-        role_worker_mapping = kwargs.get("role_worker_mapping")
-        rwm_in_kwargs = role_worker_mapping is not None
-        if role_worker_mapping is None and len(args) >= 3:
-            role_worker_mapping = args[2]
-        if isinstance(role_worker_mapping, dict):
-            try:
-                from verl.workers.fsdp_workers import ActorRolloutRefWorker as _BaseAR
-            except Exception:
-                _BaseAR = None
-            if _BaseAR is not None:
-                for role, cls in list(role_worker_mapping.items()):
-                    if (
-                        isinstance(cls, type)
-                        and issubclass(cls, _BaseAR)
-                        and not issubclass(cls, ComposerActorRolloutRefWorker)
-                    ):
-                        role_worker_mapping[role] = ComposerActorRolloutRefWorker
-            if rwm_in_kwargs:
-                kwargs["role_worker_mapping"] = role_worker_mapping
-            elif len(args) >= 3:
-                args = list(args)
-                args[2] = role_worker_mapping
-                args = tuple(args)
-
         super().__init__(*args, **kwargs)
         self._inject_composer_config()
         self.composer_context = FlowRuntimeContext()
@@ -1546,59 +1512,3 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         batch = self._inject_loss_context(batch)
         self._validate_actor_batch_contract(batch)
         return super()._update_actor(batch)
-
-
-def patch_verl_main_ppo() -> None:
-    """Patch VERL main PPO wiring to use ComposerRayPPOTrainer and compute_advantage."""
-
-    if ray_trainer_module is None:
-        raise RuntimeError(
-            "patch_verl_main_ppo requires `verl` to be installed. "
-            f"Original import error: {_VERL_IMPORT_ERROR!r}"
-        )
-
-    global _ORIGINAL_COMPUTE_ADVANTAGE
-    global _ORIGINAL_RAY_TRAINER_CLASS
-    global _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-
-    if _ORIGINAL_COMPUTE_ADVANTAGE is None:
-        _ORIGINAL_COMPUTE_ADVANTAGE = ray_trainer_module.compute_advantage
-        ray_trainer_module.compute_advantage = composer_compute_advantage
-
-    if _ORIGINAL_RAY_TRAINER_CLASS is None:
-        _ORIGINAL_RAY_TRAINER_CLASS = ray_trainer_module.RayPPOTrainer
-        ray_trainer_module.RayPPOTrainer = ComposerRayPPOTrainer
-
-    import verl.trainer.main_ppo as main_ppo
-
-    if _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS is None:
-        _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = main_ppo.RayPPOTrainer
-        main_ppo.RayPPOTrainer = ComposerRayPPOTrainer
-
-
-def unpatch_verl_main_ppo() -> None:
-    """Restore VERL's original trainer wiring if it was patched."""
-
-    if ray_trainer_module is None:
-        return
-
-    global _ORIGINAL_COMPUTE_ADVANTAGE
-    global _ORIGINAL_RAY_TRAINER_CLASS
-    global _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-
-    if _ORIGINAL_COMPUTE_ADVANTAGE is not None:
-        ray_trainer_module.compute_advantage = _ORIGINAL_COMPUTE_ADVANTAGE
-        _ORIGINAL_COMPUTE_ADVANTAGE = None
-
-    if _ORIGINAL_RAY_TRAINER_CLASS is not None:
-        ray_trainer_module.RayPPOTrainer = _ORIGINAL_RAY_TRAINER_CLASS
-        _ORIGINAL_RAY_TRAINER_CLASS = None
-
-    try:
-        import verl.trainer.main_ppo as main_ppo
-
-        if _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS is not None:
-            main_ppo.RayPPOTrainer = _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS
-            _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
-    except Exception:
-        pass
