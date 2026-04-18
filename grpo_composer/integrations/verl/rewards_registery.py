@@ -17,29 +17,7 @@ from grpo_composer.core.rewards.rank_enhanced import RankEnhancedRewardCalculato
 from grpo_composer.core.rewards.rts_based import RTSRewardCalculator
 from grpo_composer.core.rewards.unlikeliness import UnlikelinessRewardCalculator
 
-from .loss_context import get_composer_config
-
-
-def _cfg_get(config: Any, key: str, default=None):
-    val = None
-    if config is not None:
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                val = getter(key, None)
-            except TypeError:
-                pass
-        if val is None:
-            val = getattr(config, key, None)
-
-    if val is not None:
-        return val
-
-    composer_cfg = get_composer_config()
-    if key in composer_cfg and composer_cfg[key] is not None:
-        return composer_cfg[key]
-
-    return default
+from .utils import _cfg_get
 
 
 def _maybe_get(data: Any, key: str):

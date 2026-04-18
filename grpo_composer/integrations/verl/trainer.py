@@ -242,62 +242,14 @@ def _build_tracking_with_csv_fallback(original_tracking_cls: Any, csv_path: str)
     return _TrackingWithCsvFallback
 
 
-def _strict_validation_enabled() -> bool:
-    return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
-
-
-def _shape_debug(value: Any) -> str:
-    if isinstance(value, torch.Tensor):
-        return f"torch{tuple(value.shape)}"
-    if isinstance(value, np.ndarray):
-        return f"np{tuple(value.shape)}"
-    if isinstance(value, (list, tuple)):
-        return f"{type(value).__name__}(len={len(value)})"
-    return type(value).__name__
-
-
-def _cfg_get(config: Any, key: str, default=None):
-    from .loss_context import get_composer_config
-
-    val = None
-    if config is not None:
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                val = getter(key, None)
-            except TypeError:
-                pass
-        if val is None:
-            val = getattr(config, key, None)
-
-    if val is not None:
-        return val
-
-    # Fallback to globally injected composer config
-    composer_cfg = get_composer_config()
-    if key in composer_cfg and composer_cfg[key] is not None:
-        return composer_cfg[key]
-
-    return default
-
-
-def _cfg_get_nested(config: Any, path: tuple[str, ...], default=None):
-    current = config
-    for part in path:
-        if current is None:
-            return default
-        current = _cfg_get(current, part, None)
-    return default if current is None else current
-
-
-def _to_bool_flag(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(value)
+# Shared helpers (definitions live in .utils; aliased here for legacy call sites).
+from .utils import (  # noqa: E402
+    _cfg_get,
+    _cfg_get_nested,
+    _shape_debug,
+    _strict_validation_enabled,
+    _to_bool_flag,
+)
 
 
 def _dapo_debug_enabled(config: Any) -> bool:

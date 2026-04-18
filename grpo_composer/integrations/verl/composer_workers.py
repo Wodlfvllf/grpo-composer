@@ -12,10 +12,8 @@ upstream worker in two ways:
    under both ``hidden_states`` and ``response_hidden_states`` keys, which the
    composer flows (DRA-GRPO, etc.) require.
 
-Step 7 only *defines* the subclass; it is not yet wired into
-``ComposerRayPPOTrainer``. Step 8 will register it via
-``role_worker_mapping[Role.ActorRollout]`` and remove the legacy
-monkey-patches (``patch_dp_actor`` / ``patch_fsdp_workers``).
+Step 7 only *defines* the subclass; it is wired into ``ComposerRayPPOTrainer``
+via :class:`ComposerTaskRunner` (see ``entrypoint.py``).
 """
 
 from __future__ import annotations

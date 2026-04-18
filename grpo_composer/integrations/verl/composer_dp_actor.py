@@ -45,70 +45,13 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
     GPUMemoryLogger = None  # type: ignore[assignment]
 
 
-# Module-level helpers. Step 10 will move these to integrations/verl/utils.py.
-def _strict_validation_enabled() -> bool:
-    return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
-
-
-def _shape_debug(value):
-    if isinstance(value, torch.Tensor):
-        return f"torch{tuple(value.shape)}"
-    if isinstance(value, np.ndarray):
-        return f"np{tuple(value.shape)}"
-    if isinstance(value, (list, tuple)):
-        return f"{type(value).__name__}(len={len(value)})"
-    return type(value).__name__
-
-
-def _cfg_get(config, key: str, default=None):
-    from .loss_context import get_composer_config
-
-    val = None
-    if config is not None:
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                val = getter(key, None)
-            except TypeError:
-                pass
-        if val is None:
-            val = getattr(config, key, None)
-
-    if val is not None:
-        return val
-
-    composer_cfg = get_composer_config()
-    if key in composer_cfg and composer_cfg[key] is not None:
-        return composer_cfg[key]
-
-    return default
-
-
-def _extract_rollout_n(meta_info):
-    value = None
-    if isinstance(meta_info, dict):
-        value = meta_info.get("rollout_n", None)
-        if value is None:
-            value = meta_info.get("n", None)
-    else:
-        getter = getattr(meta_info, "get", None)
-        if callable(getter):
-            try:
-                value = getter("rollout_n", None)
-            except Exception:
-                value = None
-            if value is None:
-                try:
-                    value = getter("n", None)
-                except Exception:
-                    value = None
-
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
+# Shared helpers (single source of truth in .utils).
+from .utils import (
+    _cfg_get,
+    _extract_rollout_n,
+    _shape_debug,
+    _strict_validation_enabled,
+)
 
 
 if DataParallelPPOActor is None:
@@ -125,8 +68,9 @@ else:
     class ComposerDataParallelPPOActor(DataParallelPPOActor):
         """Subclass of veRL's :class:`DataParallelPPOActor` for grpo_composer.
 
-        Behavior matches ``patch_dp_actor`` exactly; this class only relocates
-        the three patched methods into proper overrides.
+        Subclass overrides ``update_policy``, ``_forward_micro_batch``, and
+        ``compute_log_prob`` to add composer-specific behavior on top of
+        veRL's :class:`DataParallelPPOActor`.
         """
 
         # ------------------------------------------------------------------
