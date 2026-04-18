@@ -1,0 +1,22 @@
+# Dataset overlay: LiveCodeBench (livecodebench/code_generation_lite)
+#
+# Reward style: code execution with hidden test cases.
+# REQUIRES code-execution reward manager and `trust_remote_code=True` at
+# load time (the dataset uses a custom loader script).
+
+data:
+  preset: livecodebench
+  train_batch_size: 32
+  max_prompt_length: 4096
+  max_response_length: 4096
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: prime
+  enable: false
+
+actor_rollout_ref:
+  rollout:
+    n: 2

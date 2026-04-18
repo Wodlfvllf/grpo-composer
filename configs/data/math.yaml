@@ -1,0 +1,22 @@
+# Dataset overlay: lighteval/MATH-Hard (competition math, single binary reward)
+# Use by including in your recipe:
+#   defaults:
+#     - data: math
+# or pass --extra-overrides "++data.preset=math"
+#
+# Reward style: rule-based \boxed{...} extraction + symbolic compare.
+# Composer compatibility: ALL recipes. Recommended for harder runs (DAPO,
+# difficulty-aware, KRPO) where GSM8K saturates too quickly.
+
+data:
+  preset: math
+  train_batch_size: 256
+  max_prompt_length: 1024
+  max_response_length: 2048   # solutions are longer than GSM8K
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive
+  enable: false

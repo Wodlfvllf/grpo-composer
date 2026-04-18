@@ -1,0 +1,17 @@
+# Dataset overlay: MBPP sanitized (mbpp/sanitized, ~427 problems)
+#
+# Reward style: code execution. ground_truth is JSON {"test_list", "code"}.
+# REQUIRES a code-execution reward manager (see humaneval.yaml notes).
+
+data:
+  preset: mbpp
+  train_batch_size: 128
+  max_prompt_length: 1024
+  max_response_length: 2048
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: prime
+  enable: false

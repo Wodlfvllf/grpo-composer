@@ -1,0 +1,21 @@
+# Dataset overlay: GSM8K (grade-school math, single binary reward)
+# Use by including in your recipe:
+#   defaults:
+#     - data: gsm8k
+# or pass --extra-overrides "++data.preset=gsm8k"
+#
+# Reward style: rule-based exact-match on ground_truth (single signal).
+# Composer compatibility: ALL recipes — no special components needed.
+
+data:
+  preset: gsm8k
+  train_batch_size: 256
+  max_prompt_length: 1024
+  max_response_length: 1024
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive   # rule-based string compare
+  enable: false           # no learned reward model

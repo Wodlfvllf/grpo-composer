@@ -44,6 +44,26 @@ def execute_training(command, env, cwd):
     )
 
 
+def _read_yaml_data_preset(config_path: Path) -> str:
+    """Best-effort read of `data.preset` from a composer YAML.
+
+    Returns "" if the field is missing, the file is unreadable, or the value
+    is not a non-empty string. Never raises — the launcher should still work
+    even if the YAML lacks a data block.
+    """
+    try:
+        import yaml  # local import; pyyaml is a hard dependency anyway
+        with config_path.open("r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:
+        return ""
+    data = doc.get("data") if isinstance(doc, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    preset = data.get("preset")
+    return preset.strip() if isinstance(preset, str) and preset.strip() else ""
+
+
 def run_training_pipeline(
     *,
     config: str,
@@ -71,6 +91,15 @@ def run_training_pipeline(
 
     checkpoint_dir = checkpoint_root / run_name
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # If the YAML carries data.preset, let it override the CLI default. This
+    # lets a recipe pin its expected dataset (e.g. configs/data/math.yaml)
+    # without forcing the launcher caller to remember --dataset-preset.
+    yaml_preset = _read_yaml_data_preset(config_path)
+    if yaml_preset and dataset_preset in ("", "gsm8k"):
+        # Only override the CLI default ('' or the launcher's gsm8k default);
+        # an explicit non-default --dataset-preset always wins.
+        dataset_preset = yaml_preset
 
     # ---- pipeline ----
     train_files, val_files = prepare_dataset(

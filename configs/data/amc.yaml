@@ -1,0 +1,17 @@
+# Dataset overlay: AMC validation (AI-MO/aimo-validation-amc)
+#
+# Reward style: rule-based exact-match.
+# Composer compatibility: ALL recipes.
+
+data:
+  preset: amc
+  train_batch_size: 64
+  max_prompt_length: 1024
+  max_response_length: 2048
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive
+  enable: false

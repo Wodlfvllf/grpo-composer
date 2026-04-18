@@ -1,0 +1,20 @@
+# Dataset overlay: GPQA main (Idavidrein/gpqa, graduate-level science MCQ)
+# Preprocess shuffles options deterministically per-row so 'A' isn't always
+# the correct answer. Ground truth is the letter (A/B/C/D).
+#
+# Reward style: rule-based exact-match on a single letter.
+# Composer compatibility: ALL recipes. n=4 rollouts work well since the
+# answer space is 4 options.
+
+data:
+  preset: gpqa
+  train_batch_size: 128
+  max_prompt_length: 2048
+  max_response_length: 1024
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive
+  enable: false
