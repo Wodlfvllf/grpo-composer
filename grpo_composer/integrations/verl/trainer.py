@@ -682,19 +682,26 @@ class FlowRuntimeContext:
 
 
 class FlowPlugin(ABC):
-    """Minimal flow plugin protocol used by the trainer extension points."""
+    """Minimal flow plugin protocol used by the trainer extension points.
+
+    Three hooks cover every runtime extension we currently need:
+
+    * ``configure``: one-shot setup at trainer init (capture tokenizer,
+      validate prerequisites, etc.).
+    * ``before_generate``: mutate / replace the rollout batch immediately
+      before ``generate_sequences`` (e.g. Info-GRPO latent-seed injection).
+    * ``before_compute_advantage``: mutate the post-rollout DataProto before
+      advantages are computed (e.g. PVPO/GAPO reference-reward generation).
+    """
 
     def configure(self, trainer: "ComposerRayPPOTrainer") -> None:
         return None
 
-    def build_loss_context(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> dict[str, Any]:
-        return {}
-
-    def before_update_actor(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> Any:
+    def before_generate(self, trainer: "ComposerRayPPOTrainer", batch: Any) -> Any:
         return batch
 
-    def after_update_actor(self, trainer: "ComposerRayPPOTrainer", batch: Any, output: Any) -> Any:
-        return output
+    def before_compute_advantage(self, trainer: "ComposerRayPPOTrainer", data: Any) -> Any:
+        return data
 
 
 class PassThroughFlowPlugin(FlowPlugin):
@@ -1567,25 +1574,12 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                     f"success={injected}, meta_info_type={type(current_meta)}, meta_info_keys={keys}"
                 )
 
-        for plugin in self.composer_flow_plugins:
-            for key, value in plugin.build_loss_context(self, batch).items():
-                if isinstance(value, torch.Tensor):
-                    _set_batch_tensor(batch, key, value)
-                else:
-                    _set_non_tensor(batch, key, value)
         return batch
 
     def _update_actor(self, batch):  # type: ignore[override]
-        for plugin in self.composer_flow_plugins:
-            batch = plugin.before_update_actor(self, batch)
-
         batch = self._inject_loss_context(batch)
         self._validate_actor_batch_contract(batch)
-        output = super()._update_actor(batch)
-
-        for plugin in self.composer_flow_plugins:
-            output = plugin.after_update_actor(self, batch, output)
-        return output
+        return super()._update_actor(batch)
 
 
 def patch_verl_main_ppo() -> None:
