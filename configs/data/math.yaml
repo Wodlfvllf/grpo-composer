@@ -14,7 +14,7 @@ data:
   max_prompt_length: 1024
   max_response_length: 2048   # solutions are longer than GSM8K
   filter_overlong_prompts: true
-  truncation: error
+  truncation: right
   shuffle: true
 
 reward_model:
