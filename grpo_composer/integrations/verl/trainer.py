@@ -714,8 +714,16 @@ _FLOW_PLUGIN_REGISTRY: dict[str, type[FlowPlugin]] = {
     "pvpo_grpo": PassThroughFlowPlugin,
     "gapo": PassThroughFlowPlugin,
     "gapo_grpo": PassThroughFlowPlugin,
-    "info_grpo": PassThroughFlowPlugin,
 }
+
+# Lazy registration of plugins that import from this module to avoid circular imports.
+def _register_builtin_flow_plugins() -> None:
+    from .flow_plugins import InfoGRPOFlowPlugin
+
+    _FLOW_PLUGIN_REGISTRY["info_grpo"] = InfoGRPOFlowPlugin
+
+
+_register_builtin_flow_plugins()
 
 def _parse_flow_list(config: Any) -> list[str]:
     algorithm = _cfg_get(config, "algorithm", None)
@@ -916,7 +924,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
         import verl.trainer.ppo.ray_trainer as ray_trainer_module
         import verl.utils.tracking as tracking_module
         import sys
-        from .info_grpo_hook import InfoGRPORolloutAugmentor
         from .ref_reward_runtime import ensure_reference_rewards, has_reference_rewards
 
         # Force intercepting the locally scoped compute_advantage inside ray_trainer
@@ -946,14 +953,6 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
             if "verl.utils.tracking" in sys.modules:
                 sys.modules["verl.utils.tracking"].Tracking = ray_trainer_module.Tracking
 
-            if "info_grpo" in self.composer_config_dict.get("composer_flow", ""):
-                if self.async_rollout_mode:
-                    original_method = self.async_rollout_manager.generate_sequences
-                    self.async_rollout_manager.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
-                else:
-                    original_method = self.actor_rollout_wg.generate_sequences
-                    self.actor_rollout_wg.generate_sequences = InfoGRPORolloutAugmentor.wrap_generate_sequences(original_method, self.tokenizer)
-            
             # Hook reference rewards if PVPO or if the config requests it dynamically
             flow_names = _parse_flow_list(self.config)
             needs_reference_reward = any(
@@ -1083,6 +1082,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
 
                         # generate a batch
                         with marked_timer("gen", timing_raw, color="red"):
+                            for plugin in self.composer_flow_plugins:
+                                gen_batch_output = plugin.before_generate(self, gen_batch_output)
                             if not self.async_rollout_mode:
                                 gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                             else:
@@ -1098,6 +1099,8 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                             with marked_timer("gen_max", timing_raw, color="purple"):
                                 gen_baseline_batch = deepcopy(gen_batch)
                                 gen_baseline_batch.meta_info["do_sample"] = False
+                                for plugin in self.composer_flow_plugins:
+                                    gen_baseline_batch = plugin.before_generate(self, gen_baseline_batch)
                                 if not self.async_rollout_mode:
                                     gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
                                 else:
