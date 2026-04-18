@@ -53,6 +53,7 @@ in three subclasses + one Hydra launcher (see
 | [`scripts/`](scripts) | Launch entrypoints: `train_grpo.py` (Hydra), `train_local.py`, `train_modal.py` |
 | [`docs/`](docs) | Getting started + experiment guide |
 | [`tests/`](tests) | Unit tests for composer components |
+| [`configs/data/`](configs/data) | Dataset overlays (GSM8K, MATH, AIME, AMC, GPQA, DAPO-Math-17K, HumanEval, MBPP, CodeContests, LiveCodeBench) — see [`configs/data/README.md`](configs/data/README.md) |
 
 ## Install
 
@@ -81,6 +82,12 @@ A novel mix from the cookbook (Kalman baseline + DAPO clip + global-token agg):
 
 ```powershell
 python scripts/train_local.py --config examples/kalman_dapo.yaml
+```
+
+A different dataset (MATH-Hard) with the same recipe:
+
+```powershell
+python scripts/train_local.py --config examples/kalman_dapo.yaml --dataset-preset math
 ```
 
 On Modal:
@@ -121,6 +128,46 @@ hyper-parameters faithfully.
 A few methods that need trained reward models or multi-reward datasets are
 intentionally not yet wired up — they would require infrastructure beyond
 GSM8K-style single-signal training.
+
+## Datasets
+
+Ten datasets are wired in [`scripts/prepare_dataset.py`](scripts/prepare_dataset.py)
+with matching overlays in [`configs/data/`](configs/data). Pick one with
+`--dataset-preset <name>` or include the overlay in your recipe.
+
+| Preset | Source | Reward style | Status |
+|---|---|---|---|
+| `gsm8k` | `openai/gsm8k` | rule-based exact match | ✅ runnable |
+| `math` | `lighteval/MATH-Hard` | rule-based `\boxed{}` compare | ✅ runnable |
+| `dapo_math_17k` | `BytedTsinghua-SIA/DAPO-Math-17k` | rule-based | ✅ runnable |
+| `aime` | `Maxwell-Jia/AIME_2024` | rule-based integer match | ✅ runnable |
+| `amc` | `AI-MO/aimo-validation-amc` | rule-based | ✅ runnable |
+| `gpqa` | `Idavidrein/gpqa` | rule-based MCQ letter | ✅ runnable |
+| `humaneval` | `openai_humaneval` | code execution (unit tests) | ⚠️ needs `prime` reward manager |
+| `mbpp` | `mbpp/sanitized` | code execution | ⚠️ needs `prime` reward manager |
+| `code_contests` | `deepmind/code_contests` | code execution (stdin/stdout, slow) | ⚠️ needs `prime` reward manager |
+| `livecodebench` | `livecodebench/code_generation_lite` | code execution (hidden tests) | ⚠️ needs `prime` reward manager |
+
+⚠️ = preprocess is wired and ground truth is JSON-encoded test cases, but
+veRL's `prime` (or your own) code-execution reward manager must be available
+or all rollouts score 0. See [`configs/data/README.md`](configs/data/README.md)
+for the full compatibility matrix (which composer recipes need which
+dataset shape).
+
+Switch dataset three equivalent ways:
+
+```powershell
+# CLI flag
+python scripts/train_local.py --config examples/kalman_dapo.yaml --dataset-preset aime
+
+# YAML data.preset (read by the launcher)
+# examples/my_recipe.yaml: data: { preset: gpqa }
+python scripts/train_local.py --config examples/my_recipe.yaml
+
+# Direct parquet paths (bypass presets)
+python scripts/train_local.py --config examples/kalman_dapo.yaml \
+    --train-files /path/to/train.parquet --val-files /path/to/val.parquet
+```
 
 ## Composer cookbook
 

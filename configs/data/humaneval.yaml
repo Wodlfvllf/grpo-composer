@@ -1,0 +1,26 @@
+# Dataset overlay: HumanEval (openai_humaneval, code completion, 164 problems)
+#
+# Reward style: code execution against unit tests. ground_truth is JSON
+# {"test", "entry_point", "canonical_solution"}.
+#
+# REQUIRES a code-execution reward manager. veRL ships `prime` style; if
+# unavailable, the naive manager will score everything 0. Drop in your own
+# reward manager via reward_model.custom_reward_function in your recipe.
+#
+# Composer compatibility: ALL composer recipes work *if* the reward manager
+# emits a scalar in [0, 1]. Group methods (GRPO, DAPO, …) prefer dense reward,
+# so combine with rank-enhanced or unlikeliness rewards if pass rates are
+# very low (most rollouts = 0).
+
+data:
+  preset: humaneval
+  train_batch_size: 64
+  max_prompt_length: 1024
+  max_response_length: 2048
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: prime    # change if you have a different code-exec manager
+  enable: false

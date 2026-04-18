@@ -1,0 +1,19 @@
+# Dataset overlay: AIME 2024 (Maxwell-Jia/AIME_2024, 30 problems)
+# Eval-only realistically; we mirror the full set as both train and val so
+# you can smoke-test the full composer pipeline on a tiny set.
+#
+# Reward style: rule-based exact-match on integer answer.
+# Composer compatibility: ALL recipes.
+
+data:
+  preset: aime
+  train_batch_size: 30
+  max_prompt_length: 1024
+  max_response_length: 4096
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive
+  enable: false

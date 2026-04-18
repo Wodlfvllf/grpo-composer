@@ -1,0 +1,19 @@
+# Dataset overlay: DAPO-Math-17K (curated competition-math, BytedTsinghua-SIA/DAPO-Math-17k)
+# Wired in scripts/prepare_dataset.py as preset 'dapo_math_17k'.
+#
+# Reward style: rule-based on ground_truth, like GSM8K/MATH.
+# Composer compatibility: ALL recipes — designed for the full DAPO pipeline
+# (asymmetric clip + dynamic sampling + global-token agg).
+
+data:
+  preset: dapo_math_17k
+  train_batch_size: 512
+  max_prompt_length: 1024
+  max_response_length: 4096
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+
+reward_model:
+  reward_manager: naive
+  enable: false
