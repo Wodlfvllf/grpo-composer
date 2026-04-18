@@ -20,9 +20,8 @@ import json
 import numpy as np
 import torch
 from .reward_ranker import BaseRanker, HeuristicRanker, RRMRanker, ensure_reward_ranks
-from .patch_dp_actor import _patch_dp_actor_update_policy, unpatch_dp_actor_update_policy, _patch_dp_actor_forward_microbatch_compute_log_prob
 from .rewards_registery import _REWARD_TRANSFORMS, _sequence_rewards_from_token
-from .patch_fsdp_workers import _patch_fsdp_compute_log_probs
+from .composer_workers import ComposerActorRolloutRefWorker
 import json
 import os
 import uuid
@@ -760,16 +759,39 @@ def _parse_flow_list(config: Any) -> list[str]:
 
 
 
-# Ensure worker-side config binding when this module is imported via
-# actor_rollout_ref.model.external_lib in FSDP worker processes.
-_patch_dp_actor_update_policy()
-_patch_dp_actor_forward_microbatch_compute_log_prob()
-_patch_fsdp_compute_log_probs()
-
 class ComposerRayPPOTrainer(RayPPOTrainer):
     """Single custom trainer that extends VERL's RayPPOTrainer with flow plugins."""
 
     def __init__(self, *args, **kwargs):
+        # Replace upstream ActorRolloutRefWorker in role_worker_mapping with our
+        # ComposerActorRolloutRefWorker subclass so the FSDP workers instantiate
+        # ComposerDataParallelPPOActor and surface hidden states via
+        # compute_log_prob. role_worker_mapping is the third positional arg or
+        # passed via kwargs (see verl.trainer.ppo.ray_trainer.RayPPOTrainer).
+        role_worker_mapping = kwargs.get("role_worker_mapping")
+        rwm_in_kwargs = role_worker_mapping is not None
+        if role_worker_mapping is None and len(args) >= 3:
+            role_worker_mapping = args[2]
+        if isinstance(role_worker_mapping, dict):
+            try:
+                from verl.workers.fsdp_workers import ActorRolloutRefWorker as _BaseAR
+            except Exception:
+                _BaseAR = None
+            if _BaseAR is not None:
+                for role, cls in list(role_worker_mapping.items()):
+                    if (
+                        isinstance(cls, type)
+                        and issubclass(cls, _BaseAR)
+                        and not issubclass(cls, ComposerActorRolloutRefWorker)
+                    ):
+                        role_worker_mapping[role] = ComposerActorRolloutRefWorker
+            if rwm_in_kwargs:
+                kwargs["role_worker_mapping"] = role_worker_mapping
+            elif len(args) >= 3:
+                args = list(args)
+                args[2] = role_worker_mapping
+                args = tuple(args)
+
         super().__init__(*args, **kwargs)
         self._inject_composer_config()
         self.composer_context = FlowRuntimeContext()
@@ -1553,10 +1575,6 @@ def patch_verl_main_ppo() -> None:
         _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = main_ppo.RayPPOTrainer
         main_ppo.RayPPOTrainer = ComposerRayPPOTrainer
 
-    _patch_dp_actor_update_policy()
-    _patch_dp_actor_forward_microbatch_compute_log_prob()
-    _patch_fsdp_compute_log_probs()
-
 
 def unpatch_verl_main_ppo() -> None:
     """Restore VERL's original trainer wiring if it was patched."""
@@ -1584,5 +1602,3 @@ def unpatch_verl_main_ppo() -> None:
             _ORIGINAL_MAIN_PPO_RAY_TRAINER_CLASS = None
     except Exception:
         pass
-
-    unpatch_dp_actor_update_policy()

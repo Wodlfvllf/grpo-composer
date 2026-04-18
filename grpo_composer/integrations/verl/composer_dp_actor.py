@@ -1,18 +1,13 @@
 """Composer subclass of veRL's :class:`DataParallelPPOActor`.
 
-Step 6 of the monkey-patch removal refactor (see commit history).
-
-The three methods previously installed as class-level monkey-patches by
-``patch_dp_actor._patch_dp_actor_update_policy`` and
-``patch_dp_actor._patch_dp_actor_forward_microbatch_compute_log_prob`` are
-now real overrides on this subclass. The subclass is defined alongside the
-existing patch so this commit is behavior-preserving on its own; Steps 7
-and 8 will wire ``ComposerActorRolloutRefWorker`` to instantiate this
-class and remove ``patch_dp_actor`` entirely.
+The three methods (``update_policy``, ``_forward_micro_batch``,
+``compute_log_prob``) are real overrides on this subclass and are wired
+into the FSDP worker via :class:`ComposerActorRolloutRefWorker`, which
+replaces the upstream ``DataParallelPPOActor`` instantiation in
+``init_model``.
 
 When ``loss_mode != "composer"``, ``update_policy`` falls through to
-``super().update_policy(data)`` instead of the patch's
-``_ORIGINAL_DP_ACTOR_UPDATE_POLICY(self, data)`` global.
+``super().update_policy(data)``.
 """
 
 from __future__ import annotations
@@ -50,14 +45,70 @@ except Exception as exc:  # pragma: no cover - exercised when verl is absent
     GPUMemoryLogger = None  # type: ignore[assignment]
 
 
-# Reuse module-level helpers from the patch module to keep a single source
-# of truth. Step 10 will move these to integrations/verl/utils.py.
-from .patch_dp_actor import (
-    _cfg_get,
-    _extract_rollout_n,
-    _shape_debug,
-    _strict_validation_enabled,
-)
+# Module-level helpers. Step 10 will move these to integrations/verl/utils.py.
+def _strict_validation_enabled() -> bool:
+    return os.environ.get("GRPO_COMPOSER_STRICT_VALIDATION", "1") != "0"
+
+
+def _shape_debug(value):
+    if isinstance(value, torch.Tensor):
+        return f"torch{tuple(value.shape)}"
+    if isinstance(value, np.ndarray):
+        return f"np{tuple(value.shape)}"
+    if isinstance(value, (list, tuple)):
+        return f"{type(value).__name__}(len={len(value)})"
+    return type(value).__name__
+
+
+def _cfg_get(config, key: str, default=None):
+    from .loss_context import get_composer_config
+
+    val = None
+    if config is not None:
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            try:
+                val = getter(key, None)
+            except TypeError:
+                pass
+        if val is None:
+            val = getattr(config, key, None)
+
+    if val is not None:
+        return val
+
+    composer_cfg = get_composer_config()
+    if key in composer_cfg and composer_cfg[key] is not None:
+        return composer_cfg[key]
+
+    return default
+
+
+def _extract_rollout_n(meta_info):
+    value = None
+    if isinstance(meta_info, dict):
+        value = meta_info.get("rollout_n", None)
+        if value is None:
+            value = meta_info.get("n", None)
+    else:
+        getter = getattr(meta_info, "get", None)
+        if callable(getter):
+            try:
+                value = getter("rollout_n", None)
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    value = getter("n", None)
+                except Exception:
+                    value = None
+
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 if DataParallelPPOActor is None:
