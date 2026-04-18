@@ -1,0 +1,46 @@
+# ──────────────────────────────────────────────────────
+# Kalman-DAPO  (mix: KRPO advantage × DAPO clip × global-token agg)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   GRPO's group mean baseline is high-variance on small groups (n=4).
+#   KRPO's Kalman filter gives a smoother, adaptive baseline AND a calibrated
+#   denominator (√P) instead of the noisy intra-group std.
+#   On top of that:
+#     - DAPO's asymmetric clip [1-0.2, 1+0.28] keeps exploration upside open
+#     - global_token aggregation removes the 1/|o_i| length penalty so long
+#       chain-of-thought trajectories aren't down-weighted
+#
+# WHY IT MIGHT WIN
+#   Math reasoning produces variable-length CoT — short answers dominate
+#   token_mean, and the noisy baseline + symmetric clip together over-suppress
+#   exploration on hard problems. Kalman + decoupled clip + length-fair agg
+#   removes all three failure modes at once.
+#
+# RISK
+#   Kalman baseline takes ~50 steps to warm up; combined with no-KL DAPO style
+#   the first few steps may be unstable. We keep a small KL anchor (0.005) as
+#   insurance.
+
+algorithm:
+  adv_estimator: kalman_grpo
+  kalman_Q: 1.0e-5
+  kalman_R: 1.0e-2
+
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 4
+
+composer:
+  clip_mode: asymmetric
+  clip_ratio: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  agg_mode: global_token
+  regularizer: kl
+  reg_coef: 0.005
+
+trainer:
+  balance_batch: false

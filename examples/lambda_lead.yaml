@@ -1,0 +1,60 @@
+# ──────────────────────────────────────────────────────
+# λ-LEAD  (mix: difficulty-aware advantage × length-dep reward × λ-GRPO agg)
+# ──────────────────────────────────────────────────────
+# HYPOTHESIS
+#   GRPO-LEAD shows that *which* problems matter (difficulty-aware advantage
+#   reweighting + length-dependent reward) drives big gains on hard math.
+#   λ-GRPO shows that *which tokens* matter (learnable f_λ aggregation that
+#   subsumes GRPO/DAPO/Dr.GRPO as special cases) also drives gains.
+#
+#   These attack orthogonal axes (problem-level vs token-level weighting),
+#   so stacking them should compose cleanly:
+#     - hard correct chains get boosted at the *advantage* level
+#     - the *aggregator* learns which tokens within those chains carry signal
+#
+# WHY IT MIGHT WIN
+#   On GSM8K the dominant loss is from easy problems crowding the gradient.
+#   GRPO-LEAD fixes the per-problem weighting; λ-GRPO fixes the per-token
+#   weighting. Together: the gradient is shaped by *both* axes simultaneously,
+#   not just one.
+#
+# RISK
+#   λ is a single scalar nn.Parameter — its gradient lives on the actor.
+#   If the difficulty-aware advantage zeroes out gradients on easy problems
+#   too aggressively, λ may stop learning. Mitigation: keep difficulty_A=0.4
+#   (paper default) so easy-problem gradients are dampened, not killed.
+
+algorithm:
+  adv_estimator: difficulty_aware_grpo
+
+actor_rollout_ref:
+  actor:
+    policy_loss:
+      loss_mode: composer
+  rollout:
+    n: 4
+
+composer:
+  clip_mode: symmetric
+  clip_ratio: 0.2
+  agg_mode: group_learnable
+  regularizer: none
+  reg_coef: 0.0
+
+  # GRPO-LEAD difficulty knobs
+  difficulty_A: 0.4
+  difficulty_B: 1.5
+  difficulty_k: 10.0
+  difficulty_rho_0: 0.75
+
+  # λ-GRPO learnable aggregation knobs
+  lambda_learnable: true
+  lambda_init: 0.0
+  lambda_r: 0.1111
+  lambda_lr: 0.1
+
+  composer_reward_pipeline:
+    - length_dependent
+
+trainer:
+  balance_batch: false
