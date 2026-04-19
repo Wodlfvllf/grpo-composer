@@ -10,7 +10,8 @@ authors:
   - family-names: "Shukla"
     given-names: "Shashank"
     # orcid: "https://orcid.org/0000-0000-0000-0000"  # add if you have one
-repository-code: "https://github.com/<your-username>/grpo-composer"
+repository-code: "https://github.com/Wodlfvllf/grpo-composer"
+url: "https://github.com/Wodlfvllf/grpo-composer"
 license: MIT
 version: "0.1.0"
 date-released: "2026-04-19"
