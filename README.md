@@ -244,6 +244,7 @@ inherit env vars, so prefer the YAML for cluster runs):
 
 * [`docs/getting_started.md`](docs/getting_started.md) — install, first run, smoke test.
 * [`docs/repository_state_and_experiment_guide.md`](docs/repository_state_and_experiment_guide.md) — paper-by-paper status, what's verified, what's flagged.
+* [`docs/reproducibility.md`](docs/reproducibility.md) — per-paper reproducibility tracker (datasets, GPU-hours, achieved vs reported metrics, W&B links).
 * [`examples/README.md`](examples/README.md) — mix-and-match cookbook recipes.
 
 ## License

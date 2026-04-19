@@ -19,9 +19,13 @@ from . import utils
 from . import clip_registery
 from . import aggregations_registery
 from . import regularisation_registery
-from . import rewards_registery
+from . import rewards_registry
 from .trainer import ComposerRayPPOTrainer
 from .entrypoint import ComposerTaskRunner, run
+
+# Backward-compatibility alias for the old typo'd module name. Will be
+# removed in v0.2.0; new code should import `rewards_registry`.
+rewards_registery = rewards_registry
 
 __all__ = [
     "advantages",
@@ -30,7 +34,8 @@ __all__ = [
     "clip_registery",
     "aggregations_registery",
     "regularisation_registery",
-    "rewards_registery",
+    "rewards_registry",
+    "rewards_registery",  # deprecated alias
     "ComposerRayPPOTrainer",
     "ComposerTaskRunner",
     "run",

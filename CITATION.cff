@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "grpo-composer: a composable GRPO research toolkit on top of veRL"
+abstract: >-
+  grpo-composer is a research-friendly wrapper around veRL that makes it
+  trivial to mix and match advantage estimators, policy losses, sequence
+  aggregations, clipping schemes, regularizers, and reward shapers from
+  recent GRPO/DAPO/Dr.GRPO-style papers.
+authors:
+  - family-names: "Shukla"
+    given-names: "Shashank"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"  # add if you have one
+repository-code: "https://github.com/<your-username>/grpo-composer"
+license: MIT
+version: "0.1.0"
+date-released: "2026-04-19"
+keywords:
+  - reinforcement-learning
+  - rlhf
+  - grpo
+  - dapo
+  - llm
+  - verl

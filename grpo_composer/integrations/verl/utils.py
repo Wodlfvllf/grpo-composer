@@ -17,7 +17,7 @@ from .loss_context import (
 
 # ---------------------------------------------------------------------------
 # Config / debug helpers (consolidated from trainer.py, composer_dp_actor.py,
-# and rewards_registery.py).
+# and rewards_registry.py).
 # ---------------------------------------------------------------------------
 
 
