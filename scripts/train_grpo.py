@@ -43,7 +43,7 @@ from grpo_composer.integrations.verl import (  # noqa: F401
     aggregations_registery,
     clip_registery,
     regularisation_registery,
-    rewards_registery,
+    rewards_registry,
     utils,
 )
 from grpo_composer.integrations.verl.entrypoint import run as composer_run

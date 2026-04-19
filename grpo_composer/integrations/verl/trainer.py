@@ -20,7 +20,7 @@ import json
 import numpy as np
 import torch
 from .reward_ranker import BaseRanker, HeuristicRanker, RRMRanker, ensure_reward_ranks
-from .rewards_registery import _REWARD_TRANSFORMS, _sequence_rewards_from_token
+from .rewards_registry import _REWARD_TRANSFORMS, _sequence_rewards_from_token
 from .composer_workers import ComposerActorRolloutRefWorker
 import json
 import os
