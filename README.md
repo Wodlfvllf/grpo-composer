@@ -100,34 +100,48 @@ modal run scripts/train_modal.py --config examples/kalman_dapo.yaml --debug
 `GRPO_COMPOSER_STRICT_VALIDATION` so you see full composer + DAPO oversampling
 diagnostics.
 
-## Implemented methods (papers)
+## Implemented methods
 
-Each lives at `configs/papers/<name>.yaml` and reproduces the paper's
-hyper-parameters faithfully.
+Each entry below has a faithful YAML at `configs/papers/<name>.yaml`.
+Status reflects what's runnable on stock veRL 0.6.1 with the scorers shipped
+in this repo — not what's been numerically reproduced (that audit lives in
+the W&B reports linked per row, once filled in).
 
-| Method | Key axis touched |
-|---|---|
-| GRPO (DeepSeekMath) | baseline |
-| Dr. GRPO | normalisation |
-| DAPO | asymmetric clip + dynamic sampling |
-| DARO | difficulty-weighted aggregation |
-| GRPO-LEAD | length-dependent reward + difficulty-aware advantage |
-| KRPO | Kalman baseline |
-| λ-GRPO | learnable token aggregation |
-| TIC-GRPO | length-corrected advantage + trajectory clip |
-| TR-GRPO | weighted-trust clip |
-| Rank-GRPO | rank-enhanced reward |
-| Rewarding Unlikely | unlikeliness reward |
-| Posterior-GRPO | posterior-composite reward |
-| Stratified-GRPO | per-stratum advantage normalisation |
-| MS-GRPO | multi-scale advantage |
-| Info-GRPO | mutual-information regulariser |
-| Lambda-GRPO | learnable f_λ |
-| AMIR-GRPO, DRA-GRPO, GAPO, GDPO, KRPO, PVPO, SPO, X-RPO | see [`configs/papers/`](configs/papers) |
+**Legend.** ✅ runnable end-to-end on a math/code preset · ⚠️ runnable but
+needs an extra dataset choice or one config caveat · ❌ blocked on missing
+infra (external reward model, step-level verifier, etc.).
 
-A few methods that need trained reward models or multi-reward datasets are
-intentionally not yet wired up — they would require infrastructure beyond
-GSM8K-style single-signal training.
+| Method | Axis touched | Status | Notes |
+|---|---|---|---|
+| **GRPO** (DeepSeekMath) | baseline | ✅ | Reference implementation. |
+| **Dr. GRPO** | normalisation | ✅ | Removes σ + length norm. |
+| **DAPO** | clip + dynamic sampling | ✅ | Asymmetric clip, oversampling, KL=0. |
+| **DARO** | difficulty-weighted aggregation | ✅ | Learnable per-bin weight + log regulariser. |
+| **GRPO-LEAD** | reward + advantage | ✅ | Length-dependent reward, difficulty-aware advantage. |
+| **KRPO** | advantage | ✅ | Kalman baseline. |
+| **λ-GRPO** | aggregation | ✅ | Single learnable `nn.Parameter`. |
+| **TIC-GRPO** | clip + advantage | ✅ | Trajectory-level ratio + length-corrected advantage. |
+| **TR-GRPO** | clip + KL | ✅ | Probability-weighted trust region. |
+| **MS-GRPO** | advantage | ✅ | Multi-scale subgroup normalisation. |
+| **Rank-GRPO** | reward | ✅ | All three "Ranking-is-Reward" variants. |
+| **Rewarding Unlikely** | reward | ✅ | Penalises high-prob correct solutions for Pass@N. |
+| **AMIR-GRPO** | regulariser | ✅ | DPO-style preference reg from intra-group rankings. |
+| **DRA-GRPO** | reward | ✅ | SMI uses the **policy's own hidden states** (surfaced by `ComposerDataParallelPPOActor`); no external embedder needed. |
+| **Info-GRPO** | rollout + regulariser | ✅ | `InfoGRPOFlowPlugin` doubles `rollout.n` and injects a per-prompt latent seed; MI regulariser splits the resulting log-probs. |
+| **PVPO** | advantage | ⚠️ | Uses `ReferenceRewardFlowPlugin`. veRL 0.6.x doesn't register the rollout mesh on the `ref` worker, so set `composer.reference_reward_source=actor_rollout` (approximation, not the paper's offline cache). |
+| **GDPO** | reward aggregation | ⚠️ | Per-reward decoupled normalisation is a no-op with a single scorer; pair with ≥2 reward signals (e.g. correctness + format). |
+| **GAPO** | reward | ⚠️ | Frequency-aware reward assumes a finite output vocabulary; only meaningful on categorical / MCQ datasets (e.g. GPQA). |
+| **Stratified-GRPO** | advantage | ⚠️ | SAN ≡ global norm unless rollouts have structural variation (search/tool-use). Skip until that rollout exists. |
+| **X-RPO** | advantage (+ rollout) | ⚠️ | Advantage-sharpening half is wired ✅; the rollout-planning half (priority scheduling, ICL seeding for zero-reward prompts) is not. Document this when reporting. |
+| **Posterior-GRPO** (P-GRPO) | reward | ❌ | $R = R_f + R_o + R_o R_t$ requires a **thinking reward model** for $R_t$. Without one, the gated term is zero and you're running format+outcome only. |
+| **SPO** | reward | ❌ | RTS = "length of correct reasoning segment / total length" needs a **per-step / per-token correctness verifier** in the reward function; veRL's stock scorers only return final-answer correctness. |
+
+> **Reproducibility numbers.** Per-paper achieved-vs-paper metrics, GPU-hours,
+> and W&B report links are tracked in this table itself — once a row has been
+> validated end-to-end, append it to the relevant cell as e.g.
+> `✅ · MATH pass@1 0.42 (vs 0.45) · 8×H100 · 12h · [W&B](url)`.
+> PRs adding or correcting numbers (including negative results) are very
+> welcome.
 
 ## Datasets
 
@@ -244,39 +258,8 @@ inherit env vars, so prefer the YAML for cluster runs):
 
 * [`docs/getting_started.md`](docs/getting_started.md) — install, first run, smoke test.
 * [`docs/repository_state_and_experiment_guide.md`](docs/repository_state_and_experiment_guide.md) — paper-by-paper status, what's verified, what's flagged.
-* [`docs/reproducibility.md`](docs/reproducibility.md) — per-paper reproducibility tracker (datasets, GPU-hours, achieved vs reported metrics, W&B links).
 * [`examples/README.md`](examples/README.md) — mix-and-match cookbook recipes.
 
 ## License
 
 See [LICENSE](LICENSE).
-# Unified GRPO Framework v4
-
-## Overview
-This repository contains a unified mathematical framework for six Group Relative Policy Optimization (GRPO) variants. The framework consolidates these methods into a single objective function with configurable hyperparameters, allowing for the recovery of individual methods as well as the creation of hybrid configurations.
-
-## Supported Methods
-The framework unifies the following variants:
-1.  **GRPO** (DeepSeekMath, 2024)
-2.  **Dr. GRPO** (Bias-Free, 2025)
-3.  **DAPO** (ByteDance, 2025)
-4.  **DARO** (Difficulty-Aware, 2025)
-5.  **$\lambda$-GRPO** (Token Preferences, 2025)
-6.  **DRA-GRPO** (Diversity-Aware, 2025)
-
-## Unified Objective
-The master objective function is defined as:
-
-$$
-\mathcal{J}_{\text{Unified}}(\theta, \{w_\mu\}, \lambda) = \sum_{\mu \in \mathcal{M}} w_\mu^{\text{eff}} \cdot \mathbb{E}_{q: \mu_q = \mu} \left[ \mathbb{I}_{\text{OS}}(q) \cdot \frac{1}{\Omega_\mu} \sum_{i=1}^{G} f_\lambda(o_i) \cdot w_i^{\text{len}} \sum_{t=1}^{|o_i|} \left( \mathcal{L}_{\text{clip}}^{(i,t)} - \beta \cdot D_{\text{KL}}^{(i,t)} \right) \right] + \mathcal{L}_{\text{reg}}
-$$
-
-## Configuration
-The framework is controlled by 19 hyperparameters, including:
--   **Clipping**: `epsilon_low`, `epsilon_high`
--   **Normalization**: `std_normalize`, `length_norm`, `group_norm_type`
--   **Regularization**: `beta` (KL penalty)
--   **Sampling**: `oversampling`, `group_size`
--   **Weighting**: `difficulty_weighting`, `lambda_weighting`, `diversity_weighting`
-
-Refer to the mathematical documentation for detailed derivations and recovery proofs.
