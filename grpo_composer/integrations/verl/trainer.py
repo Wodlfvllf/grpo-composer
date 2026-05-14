@@ -1248,6 +1248,19 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                             for plugin in self.composer_flow_plugins:
                                 batch = plugin.before_compute_advantage(self, batch)
 
+                            advantage_config = self.config.algorithm
+                            composer_cfg = getattr(self, "composer_config_dict", None)
+                            if isinstance(composer_cfg, dict) and composer_cfg:
+                                try:
+                                    if OmegaConf.is_config(self.config.algorithm):
+                                        algorithm_cfg = OmegaConf.to_container(self.config.algorithm, resolve=True)
+                                    else:
+                                        algorithm_cfg = dict(self.config.algorithm)
+                                except Exception:
+                                    algorithm_cfg = {}
+                                if isinstance(algorithm_cfg, dict):
+                                    advantage_config = {**composer_cfg, **algorithm_cfg}
+
                             batch = composer_compute_advantage(
                                 batch,
                                 adv_estimator=self.config.algorithm.adv_estimator,
@@ -1255,7 +1268,7 @@ class ComposerRayPPOTrainer(RayPPOTrainer):
                                 lam=self.config.algorithm.lam,
                                 num_repeat=self.config.actor_rollout_ref.rollout.n,
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                                config=self.config.algorithm,
+                                config=advantage_config,
                                 ranker=ranker,
                                 tokenizer=self.tokenizer,
                             )

@@ -14,10 +14,9 @@
 #   Aggregation:   Token mean (base GRPO)
 #   KL:            Standard KL (base GRPO)
 #
-# Note: Current implementation uses exhaustive enumeration of subgroups.
-#   Paper also proposes dilated scale sampling (M scales) and greedy diverse
-#   group sampling (K groups) for acceleration — not yet implemented.
-#   For G=8-12 the exhaustive version is tractable.
+# Note: Current implementation uses dilated/random subgroup sampling via
+#   ms_num_scales and ms_samples_per_scale. It is therefore a sampled
+#   approximation to the all-subgroup objective, not exhaustive enumeration.
 
 algorithm:
   adv_estimator: multi_scale_grpo
